@@ -8,6 +8,11 @@ import (
 	"database/sql"
 )
 
+type JobState struct {
+	JobSlug  string `json:"job_slug"`
+	Disabled int64  `json:"disabled"`
+}
+
 type Log struct {
 	CreatedAt  int64  `json:"created_at"`
 	RunID      int64  `json:"run_id"`

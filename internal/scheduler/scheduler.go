@@ -6,6 +6,8 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+type EntryID = cron.EntryID
+
 func New() *Scheduler {
 	s := cron.New()
 	s.Start()
@@ -16,6 +18,7 @@ func New() *Scheduler {
 type Scheduler struct {
 	scheduler *cron.Cron
 	parser    cron.Parser
+	entries   map[string]EntryID
 }
 
 func (c *Scheduler) Stop() context.Context {
@@ -24,6 +27,30 @@ func (c *Scheduler) Stop() context.Context {
 
 func (c *Scheduler) Add(cronString string, cmd func()) {
 	c.scheduler.AddFunc(cronString, cmd)
+}
+
+func (c *Scheduler) AddJob(key string, cronString string, cmd func()) error {
+	id, err := c.scheduler.AddFunc(cronString, cmd)
+	if err != nil {
+		return err
+	}
+	if c.entries == nil {
+		c.entries = make(map[string]EntryID)
+	}
+	c.entries[key] = id
+	return nil
+}
+
+func (c *Scheduler) RemoveJob(key string) {
+	if id, ok := c.entries[key]; ok {
+		c.scheduler.Remove(id)
+		delete(c.entries, key)
+	}
+}
+
+func (c *Scheduler) HasJob(key string) bool {
+	_, ok := c.entries[key]
+	return ok
 }
 
 func (c *Scheduler) GetParser() *cron.Parser { return &c.parser }

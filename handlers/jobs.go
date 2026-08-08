@@ -20,7 +20,9 @@ type JobService interface {
 	ExecuteJobs(jobs []config.Job)
 	ExecuteJob(job *config.Job)
 	ListJobs() []services.JobView
-	ListRuns(name string, limit int64) ([]services.RunView, error)
+	ListRuns(name string, limit int64, includeLogs bool) ([]services.RunView, error)
+	SetJobDisabled(name string, disabled bool) error
+	GetDailyStats(name string, days int64) ([]services.DayStat, error)
 }
 
 func NewJobHandler(js JobService) *JobHandler {
@@ -69,14 +71,81 @@ type Runs struct {
 }
 
 func (jh *JobHandler) listRunsHandler(ctx context.Context, input *struct {
-	Name  string `path:"job_name" minLength:"1" maxLength:"255" doc:"job name"`
-	Limit int64  `query:"limit" default:"5" doc:"number of runs to return"`
+	Name        string `path:"job_name" minLength:"1" maxLength:"255" doc:"job name"`
+	Limit       int64  `query:"limit" default:"5" doc:"number of runs to return"`
+	IncludeLogs bool   `query:"include_logs" default:"true" doc:"include logs for each run"`
 }) (*Runs, error) {
-	jobView, err := jh.JobService.ListRuns(input.Name, input.Limit)
+	jobView, err := jh.JobService.ListRuns(input.Name, input.Limit, input.IncludeLogs)
 	if err != nil {
 		return nil, huma.Error404NotFound("Job not found")
 	}
 	return &Runs{Body: jobView}, nil
+}
+
+func (jh *JobHandler) heatmapOperation() huma.Operation {
+	return huma.Operation{
+		OperationID: "get-heatmap",
+		Method:      http.MethodGet,
+		Path:        "/api/jobs/{job_name}/heatmap",
+		Summary:     "Get heatmap",
+		Description: "Get daily run statistics for a job, suitable for a GitHub-style activity heatmap.",
+		Tags:        []string{"Runs"},
+	}
+}
+
+type Heatmap struct {
+	Body []services.DayStat
+}
+
+func (jh *JobHandler) heatmapHandler(ctx context.Context, input *struct {
+	Name string `path:"job_name" minLength:"1" maxLength:"255" doc:"job name"`
+	Days int64  `query:"days" default:"90" doc:"number of days to look back"`
+}) (*Heatmap, error) {
+	stats, err := jh.JobService.GetDailyStats(input.Name, input.Days)
+	if err != nil {
+		return nil, huma.Error404NotFound("Job not found")
+	}
+	return &Heatmap{Body: stats}, nil
+}
+
+func (jh *JobHandler) pauseJobOperation() huma.Operation {
+	return huma.Operation{
+		OperationID: "pause-job",
+		Method:      http.MethodPost,
+		Path:        "/api/jobs/{name}/pause",
+		Summary:     "Pause job",
+		Description: "Pause a job. Scheduled executions are skipped until resumed. State persists across restarts.",
+		Tags:        []string{"Jobs"},
+	}
+}
+
+func (jh *JobHandler) pauseJobHandler(ctx context.Context, input *struct {
+	Name string `path:"name" maxLength:"255" doc:"job name"`
+}) (*struct{}, error) {
+	if err := jh.JobService.SetJobDisabled(input.Name, true); err != nil {
+		return nil, huma.Error404NotFound("Job not found")
+	}
+	return nil, nil
+}
+
+func (jh *JobHandler) resumeJobOperation() huma.Operation {
+	return huma.Operation{
+		OperationID: "resume-job",
+		Method:      http.MethodPost,
+		Path:        "/api/jobs/{name}/resume",
+		Summary:     "Resume job",
+		Description: "Resume a paused job.",
+		Tags:        []string{"Jobs"},
+	}
+}
+
+func (jh *JobHandler) resumeJobHandler(ctx context.Context, input *struct {
+	Name string `path:"name" maxLength:"255" doc:"job name"`
+}) (*struct{}, error) {
+	if err := jh.JobService.SetJobDisabled(input.Name, false); err != nil {
+		return nil, huma.Error404NotFound("Job not found")
+	}
+	return nil, nil
 }
 
 func (jh *JobHandler) executeJobsOperation() huma.Operation {

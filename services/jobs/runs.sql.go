@@ -76,6 +76,63 @@ func (q *Queries) DeleteOldRuns(ctx context.Context, startTime int64) error {
 	return err
 }
 
+const getDailyRunStats = `-- name: GetDailyRunStats :many
+SELECT
+  CAST(STRFTIME ('%Y-%m-%d', start_time / 1000, 'unixepoch', 'localtime') AS TEXT) AS day,
+  CAST(SUM(CASE WHEN status_id = 3 THEN 1 ELSE 0 END) AS INTEGER) AS succeeded,
+  CAST(SUM(CASE WHEN status_id IN (2, 4) THEN 1 ELSE 0 END) AS INTEGER) AS failed,
+  COUNT(*) AS total
+FROM
+  runs
+WHERE
+  job_slug = ?
+  AND start_time >= ?
+GROUP BY
+  day
+ORDER BY
+  day
+`
+
+type GetDailyRunStatsParams struct {
+	JobSlug   string `json:"job_slug"`
+	StartTime int64  `json:"start_time"`
+}
+
+type GetDailyRunStatsRow struct {
+	Day       string `json:"day"`
+	Succeeded int64  `json:"succeeded"`
+	Failed    int64  `json:"failed"`
+	Total     int64  `json:"total"`
+}
+
+func (q *Queries) GetDailyRunStats(ctx context.Context, arg GetDailyRunStatsParams) ([]GetDailyRunStatsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getDailyRunStats, arg.JobSlug, arg.StartTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetDailyRunStatsRow
+	for rows.Next() {
+		var i GetDailyRunStatsRow
+		if err := rows.Scan(
+			&i.Day,
+			&i.Succeeded,
+			&i.Failed,
+			&i.Total,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getRuns = `-- name: GetRuns :many
 SELECT
   id,
