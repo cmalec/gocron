@@ -106,3 +106,40 @@ SET
 WHERE
   status_id = 1
   AND end_time IS NULL;
+
+-- name: GetDailyRunStats :many
+SELECT
+  CAST(
+    STRFTIME (
+      '%Y-%m-%d',
+      start_time / 1000,
+      'unixepoch',
+      'localtime'
+    ) AS TEXT
+  ) AS day,
+  CAST(
+    SUM(
+      CASE
+        WHEN status_id = 3 THEN 1
+        ELSE 0
+      END
+    ) AS INTEGER
+  ) AS succeeded,
+  CAST(
+    SUM(
+      CASE
+        WHEN status_id IN (2, 4) THEN 1
+        ELSE 0
+      END
+    ) AS INTEGER
+  ) AS failed,
+  COUNT(*) AS total
+FROM
+  runs
+WHERE
+  job_slug = ?
+  AND start_time >= ?
+GROUP BY
+  day
+ORDER BY
+  day;

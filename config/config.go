@@ -526,3 +526,25 @@ func ToggleDisabledJob(name string) error {
 	}
 	return fmt.Errorf("job %q not found", name)
 }
+
+func SetJobDisabled(name string, disabled bool) error {
+	mu.Lock()
+	defer mu.Unlock()
+	for i, job := range cfg.Jobs {
+		if strings.EqualFold(job.Name, name) {
+			cfg.Jobs[i].Disabled = disabled
+			return nil
+		}
+	}
+	return fmt.Errorf("job %q not found", name)
+}
+
+func SetDisabledStates(states map[string]bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	for i := range cfg.Jobs {
+		if disabled, ok := states[cfg.Jobs[i].Slug]; ok {
+			cfg.Jobs[i].Disabled = disabled
+		}
+	}
+}

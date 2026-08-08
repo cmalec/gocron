@@ -6,10 +6,11 @@ import { useEventSource } from '@vueuse/core';
 import { onMounted, watch } from 'vue';
 import { BackendURL } from './main';
 
-const { parseEventInfo, fetchJobs } = useJobs();
+const { parseEventInfo, fetchJobs, fetchAllHeatmaps } = useJobs();
 
 onMounted(async () => {
   await fetchJobs();
+  fetchAllHeatmaps(90);
 });
 
 const { data, close } = useEventSource(BackendURL + '/api/events?stream=status', [], {
@@ -22,9 +23,9 @@ watch(() => data.value, parseEventInfo);
 </script>
 
 <template>
-  <div class="container pb-2 pt-3 md:py-4 lg:py-6">
+  <div class="min-h-screen bg-base-200/50">
     <AppHeader />
-    <main>
+    <main class="container py-6">
       <RouterView v-slot="{ Component }">
         <Transition mode="out-in">
           <component :is="Component" />

@@ -55,7 +55,16 @@ func generateUniqueTimestamp() int64 {
 
 type JobView struct {
 	config.Job
-	Runs []RunView `json:"runs"`
+	NextRunUnix int64     `json:"next_run_unix"`
+	NextRun     string    `json:"next_run"`
+	Runs        []RunView `json:"runs"`
+}
+
+type DayStat struct {
+	Day       string `json:"day"`
+	Succeeded int64  `json:"succeeded"`
+	Failed    int64  `json:"failed"`
+	Total     int64  `json:"total"`
 }
 
 type RunView struct {
@@ -79,10 +88,24 @@ func NewJobService() (*JobService, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	js := &JobService{Queries: queries, jobCtx: ctx, jobCancel: cancel}
 	queries.StopRunning(context.Background())
+	js.loadJobStates()
 	js.setupJobs()
 	js.setupViperWatcher()
 
 	return js, nil
+}
+
+func (js *JobService) loadJobStates() {
+	states, err := js.Queries.GetJobStates(context.Background())
+	if err != nil {
+		slog.Error("Failed to load job states", "error", err)
+		return
+	}
+	disabled := make(map[string]bool, len(states))
+	for _, state := range states {
+		disabled[state.JobSlug] = state.Disabled != 0
+	}
+	config.SetDisabledStates(disabled)
 }
 
 func (js *JobService) setupJobs() {
@@ -92,11 +115,8 @@ func (js *JobService) setupJobs() {
 	}
 
 	js.Scheduler = scheduler.New()
-	var cronJobs = config.GetAllCrons()
-	for sTime := range cronJobs {
-		js.Scheduler.Add(sTime, func() {
-			js.ExecuteJobs(cronJobs[sTime])
-		})
+	for _, job := range config.GetJobs() {
+		js.scheduleJob(job)
 	}
 
 	if config.GetDeleteRunsAfterDays() > 0 {
@@ -104,8 +124,30 @@ func (js *JobService) setupJobs() {
 			js.Queries.DeleteOldRuns(context.Background(), time.Now().AddDate(0, 0, -int(config.GetDeleteRunsAfterDays())).UnixMilli())
 		})
 	}
-	// delete any orphaned runs inside the db for cleanup
+	// delete any orphaned runs and states inside the db for cleanup
 	deleteOrphanedRuns(js.Queries)
+}
+
+func (js *JobService) scheduleJob(job config.Job) {
+	if job.DisableCron {
+		return
+	}
+	cronExpr := config.GetJobsCron(&job)
+	if cronExpr == "" {
+		return
+	}
+	j := job
+	if err := js.Scheduler.AddJob(job.Slug, cronExpr, func() { js.runScheduled(j) }); err != nil {
+		slog.Error("Failed to schedule job", "job", job.Name, "cron", cronExpr, "error", err)
+	}
+}
+
+func (js *JobService) runScheduled(job config.Job) {
+	current := config.GetJobByName(job.Slug)
+	if current == nil || current.Disabled {
+		return
+	}
+	js.ExecuteJobs([]config.Job{*current})
 }
 
 func (js *JobService) setupViperWatcher() {
@@ -196,6 +238,67 @@ func deleteOrphanedRuns(queries *jobs.Queries) {
 		slugs = append(slugs, job.Slug)
 	}
 	queries.DeleteObsoleteRuns(context.Background(), slugs)
+	queries.DeleteObsoleteJobStates(context.Background(), slugs)
+}
+
+func (js *JobService) nextRun(job config.Job) (int64, string) {
+	if job.DisableCron {
+		return 0, ""
+	}
+	cronExpr := config.GetJobsCron(&job)
+	if cronExpr == "" {
+		return 0, ""
+	}
+	schedule, err := js.Scheduler.GetParser().Parse(cronExpr)
+	if err != nil {
+		return 0, ""
+	}
+	next := schedule.Next(time.Now())
+	return next.UnixMilli(), next.Local().Format(DATE_FORMAT)
+}
+
+func (js *JobService) SetJobDisabled(name string, disabled bool) error {
+	job := config.GetJobByName(name)
+	if job == nil {
+		return fmt.Errorf("job %q not found", name)
+	}
+	if err := config.SetJobDisabled(job.Name, disabled); err != nil {
+		return err
+	}
+	var disabledInt int64
+	if disabled {
+		disabledInt = 1
+	}
+	if err := js.Queries.SetJobState(context.Background(), jobs.SetJobStateParams{JobSlug: job.Slug, Disabled: disabledInt}); err != nil {
+		slog.Error("Failed to persist job state", "job", job.Name, "error", err)
+	}
+	js.Events.SendJobEvent(js.IsIdle(), nil, js.ListJobs())
+	return nil
+}
+
+func (js *JobService) GetDailyStats(name string, days int64) ([]DayStat, error) {
+	job := config.GetJobByName(name)
+	if job == nil {
+		return nil, fmt.Errorf("job %q not found", name)
+	}
+	if days <= 0 {
+		days = 90
+	}
+	since := time.Now().AddDate(0, 0, -int(days)).UnixMilli()
+	rows, err := js.Queries.GetDailyRunStats(context.Background(), jobs.GetDailyRunStatsParams{JobSlug: job.Slug, StartTime: since})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get daily stats for job %s: %w", name, err)
+	}
+	stats := make([]DayStat, 0, len(rows))
+	for _, row := range rows {
+		stats = append(stats, DayStat{
+			Day:       row.Day,
+			Succeeded: row.Succeeded,
+			Failed:    row.Failed,
+			Total:     row.Total,
+		})
+	}
+	return stats, nil
 }
 
 func (js *JobService) ExecuteJobs(jobs []config.Job) {
@@ -324,6 +427,7 @@ func (js *JobService) ListJobs() []JobView {
 
 	result := make([]JobView, 0, len(jobs))
 	for _, job := range jobs {
+		nextUnix, nextFormatted := js.nextRun(job)
 		result = append(result, JobView{
 			Job: config.Job{
 				Name:        job.Name,
@@ -332,14 +436,16 @@ func (js *JobService) ListJobs() []JobView {
 				DisableCron: job.DisableCron,
 				Disabled:    job.Disabled,
 			},
-			Runs: runsByJob[job.Name],
+			NextRunUnix: nextUnix,
+			NextRun:     nextFormatted,
+			Runs:        runsByJob[job.Name],
 		})
 	}
 
 	return result
 }
 
-func (js *JobService) ListRuns(name string, limit int64) ([]RunView, error) {
+func (js *JobService) ListRuns(name string, limit int64, includeLogs bool) ([]RunView, error) {
 	runs, err := js.Queries.GetRuns(context.Background(), jobs.GetRunsParams{JobSlug: name, Limit: limit})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get runs for job %s: %w", name, err)
@@ -349,19 +455,19 @@ func (js *JobService) ListRuns(name string, limit int64) ([]RunView, error) {
 		return []RunView{}, nil
 	}
 
-	runIDs := make([]int64, 0, len(runs))
-	for _, run := range runs {
-		runIDs = append(runIDs, run.ID)
-	}
-
-	allLogs, err := js.Queries.ListLogsByRunIDs(context.Background(), runIDs)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get logs for runs: %w", err)
-	}
-
 	logsByRun := make(map[int64][]jobs.ListLogsByRunIDsRow)
-	for _, log := range allLogs {
-		logsByRun[log.RunID] = append(logsByRun[log.RunID], log)
+	if includeLogs {
+		runIDs := make([]int64, 0, len(runs))
+		for _, run := range runs {
+			runIDs = append(runIDs, run.ID)
+		}
+		allLogs, err := js.Queries.ListLogsByRunIDs(context.Background(), runIDs)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get logs for runs: %w", err)
+		}
+		for _, log := range allLogs {
+			logsByRun[log.RunID] = append(logsByRun[log.RunID], log)
+		}
 	}
 
 	result := make([]RunView, 0, len(runs))

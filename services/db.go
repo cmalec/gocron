@@ -15,7 +15,7 @@ import (
 //go:embed jobs.sql
 var ddl string
 
-const schemaVersion int64 = 1
+const schemaVersion int64 = 2
 
 func setupSQLite() (*jobs.Queries, error) {
 	ctx := context.Background()
