@@ -78,9 +78,30 @@ func (q *Queries) DeleteOldRuns(ctx context.Context, startTime int64) error {
 
 const getDailyRunStats = `-- name: GetDailyRunStats :many
 SELECT
-  CAST(STRFTIME ('%Y-%m-%d', start_time / 1000, 'unixepoch', 'localtime') AS TEXT) AS day,
-  CAST(SUM(CASE WHEN status_id = 3 THEN 1 ELSE 0 END) AS INTEGER) AS succeeded,
-  CAST(SUM(CASE WHEN status_id IN (2, 4) THEN 1 ELSE 0 END) AS INTEGER) AS failed,
+  CAST(
+    STRFTIME (
+      '%Y-%m-%d',
+      start_time / 1000,
+      'unixepoch',
+      'localtime'
+    ) AS TEXT
+  ) AS day,
+  CAST(
+    SUM(
+      CASE
+        WHEN status_id = 3 THEN 1
+        ELSE 0
+      END
+    ) AS INTEGER
+  ) AS succeeded,
+  CAST(
+    SUM(
+      CASE
+        WHEN status_id IN (2, 4) THEN 1
+        ELSE 0
+      END
+    ) AS INTEGER
+  ) AS failed,
   COUNT(*) AS total
 FROM
   runs
@@ -119,6 +140,101 @@ func (q *Queries) GetDailyRunStats(ctx context.Context, arg GetDailyRunStatsPara
 			&i.Succeeded,
 			&i.Failed,
 			&i.Total,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getJobSuccessRates = `-- name: GetJobSuccessRates :many
+SELECT
+  job_slug,
+  CAST(
+    SUM(
+      CASE
+        WHEN status_id = 3 THEN 1
+        ELSE 0
+      END
+    ) AS INTEGER
+  ) AS succeeded,
+  COUNT(*) AS total
+FROM
+  runs
+WHERE
+  status_id != 1
+GROUP BY
+  job_slug
+`
+
+type GetJobSuccessRatesRow struct {
+	JobSlug   string `json:"job_slug"`
+	Succeeded int64  `json:"succeeded"`
+	Total     int64  `json:"total"`
+}
+
+func (q *Queries) GetJobSuccessRates(ctx context.Context) ([]GetJobSuccessRatesRow, error) {
+	rows, err := q.db.QueryContext(ctx, getJobSuccessRates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetJobSuccessRatesRow
+	for rows.Next() {
+		var i GetJobSuccessRatesRow
+		if err := rows.Scan(&i.JobSlug, &i.Succeeded, &i.Total); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getRecentRuns = `-- name: GetRecentRuns :many
+SELECT
+  id,
+  job_name,
+  job_slug,
+  status_id,
+  start_time,
+  end_time
+FROM
+  runs
+ORDER BY
+  start_time DESC
+LIMIT
+  ?
+`
+
+func (q *Queries) GetRecentRuns(ctx context.Context, limit int64) ([]Run, error) {
+	rows, err := q.db.QueryContext(ctx, getRecentRuns, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Run
+	for rows.Next() {
+		var i Run
+		if err := rows.Scan(
+			&i.ID,
+			&i.JobName,
+			&i.JobSlug,
+			&i.StatusID,
+			&i.StartTime,
+			&i.EndTime,
 		); err != nil {
 			return nil, err
 		}

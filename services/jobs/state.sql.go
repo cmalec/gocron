@@ -66,8 +66,8 @@ const setJobState = `-- name: SetJobState :exec
 INSERT INTO
   job_state (job_slug, disabled)
 VALUES
-  (?, ?)
-ON CONFLICT (job_slug) DO UPDATE
+  (?, ?) ON CONFLICT (job_slug) DO
+UPDATE
 SET
   disabled = excluded.disabled
 `

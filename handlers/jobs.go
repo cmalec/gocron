@@ -23,6 +23,7 @@ type JobService interface {
 	ListRuns(name string, limit int64, includeLogs bool) ([]services.RunView, error)
 	SetJobDisabled(name string, disabled bool) error
 	GetDailyStats(name string, days int64) ([]services.DayStat, error)
+	GetActivity(limit int64) []services.ActivityRun
 }
 
 func NewJobHandler(js JobService) *JobHandler {
@@ -146,6 +147,27 @@ func (jh *JobHandler) resumeJobHandler(ctx context.Context, input *struct {
 		return nil, huma.Error404NotFound("Job not found")
 	}
 	return nil, nil
+}
+
+func (jh *JobHandler) activityOperation() huma.Operation {
+	return huma.Operation{
+		OperationID: "get-activity",
+		Method:      http.MethodGet,
+		Path:        "/api/activity",
+		Summary:     "Get activity",
+		Description: "Get the most recent runs across all jobs.",
+		Tags:        []string{"Runs"},
+	}
+}
+
+type Activity struct {
+	Body []services.ActivityRun
+}
+
+func (jh *JobHandler) activityHandler(ctx context.Context, input *struct {
+	Limit int64 `query:"limit" default:"30" doc:"number of runs to return"`
+}) (*Activity, error) {
+	return &Activity{Body: jh.JobService.GetActivity(input.Limit)}, nil
 }
 
 func (jh *JobHandler) executeJobsOperation() huma.Operation {

@@ -10,9 +10,10 @@ import (
 	"time"
 
 	"github.com/flohoss/gocron/pkg/expand"
-	"github.com/go-playground/validator/v10"
+	validator "github.com/go-playground/validator/v10"
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	goslug "github.com/gosimple/slug"
+	"github.com/robfig/cron/v3"
 	"github.com/spf13/viper"
 )
 
@@ -109,6 +110,23 @@ type TerminalSettings struct {
 
 func init() {
 	validate = validator.New()
+	if err := validate.RegisterValidation("cron", func(fl validator.FieldLevel) bool {
+		expr, ok := fl.Field().Interface().(string)
+		if !ok || expr == "" {
+			return true
+		}
+		_, err := cronParser.Parse(expr)
+		return err == nil
+	}); err != nil {
+		panic(err)
+	}
+}
+
+var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+func ValidateCronExpression(expr string) error {
+	_, err := cronParser.Parse(expr)
+	return err
 }
 
 func slugifyJobName(name string) string {

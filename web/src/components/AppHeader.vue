@@ -4,6 +4,7 @@ import { useJobs } from '../stores/useJobs';
 
 const router = useRouter();
 const { search, busy, loading, runAll } = useJobs();
+const emit = defineEmits<{ newJob: [] }>();
 </script>
 
 <template>
@@ -23,10 +24,17 @@ const { search, busy, loading, runAll } = useJobs();
       </div>
 
       <div class="ml-auto flex items-center gap-1.5">
+        <button v-if="$route.name === 'dashboard'" @click="emit('newJob')" class="btn btn-sm btn-soft" title="Add a new job">
+          <span class="icon-[fa7-solid--plus] size-3.5"></span>
+          <span class="hidden md:inline">New job</span>
+        </button>
         <button v-if="$route.name === 'dashboard'" @click="runAll" :disabled="busy" class="btn btn-primary btn-sm" title="Run all enabled jobs">
           <span v-if="!busy || loading" class="icon-[fa7-solid--play] size-3.5"></span>
           <span v-else class="loading loading-spinner loading-xs"></span>
           <span class="hidden md:inline">Run all</span>
+        </button>
+        <button @click="router.push('/activity')" class="btn btn-ghost btn-sm btn-circle" title="Activity">
+          <span class="icon-[fa7-solid--clock-rotate-left] size-4"></span>
         </button>
         <button @click="router.push('/commands')" class="btn btn-ghost btn-sm btn-circle" title="Terminal">
           <span class="icon-[fa7-solid--terminal] size-4"></span>

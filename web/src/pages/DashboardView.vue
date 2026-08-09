@@ -97,6 +97,13 @@ async function run(event: Event, name: string) {
               <template v-if="lastRun(job)">Last: {{ timeAgo(lastRun(job)!.start_time_unix) }}</template>
               <template v-else>No runs yet</template>
             </span>
+            <span
+              v-if="job.run_count > 0"
+              class="font-medium"
+              :class="job.success_rate >= 90 ? 'text-success' : job.success_rate >= 50 ? 'text-warning' : 'text-error'"
+            >
+              {{ Math.round(job.success_rate) }}% · {{ job.run_count }} runs
+            </span>
             <span v-if="!job.disable_cron && !job.disabled">Next: {{ timeUntil(job.next_run_unix) }}</span>
           </div>
 

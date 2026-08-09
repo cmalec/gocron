@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { RouterView } from 'vue-router';
 import AppHeader from './components/AppHeader.vue';
+import JobFormDialog from './components/JobFormDialog.vue';
 import { useJobs } from './stores/useJobs';
 import { useEventSource } from '@vueuse/core';
-import { onMounted, watch } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { BackendURL } from './main';
 
 const { parseEventInfo, fetchJobs, fetchAllHeatmaps } = useJobs();
+const showNewJob = ref(false);
 
 onMounted(async () => {
   await fetchJobs();
@@ -20,11 +22,19 @@ addEventListener('beforeunload', () => {
   close();
 });
 watch(() => data.value, parseEventInfo);
+
+async function onDialogClose(saved: boolean) {
+  showNewJob.value = false;
+  if (saved) {
+    await fetchJobs();
+    fetchAllHeatmaps(90);
+  }
+}
 </script>
 
 <template>
   <div class="min-h-screen bg-base-200/50">
-    <AppHeader />
+    <AppHeader @new-job="showNewJob = true" />
     <main class="container py-6">
       <RouterView v-slot="{ Component }">
         <Transition mode="out-in">
@@ -32,6 +42,7 @@ watch(() => data.value, parseEventInfo);
         </Transition>
       </RouterView>
     </main>
+    <JobFormDialog v-if="showNewJob" :job="null" @close="onDialogClose" />
   </div>
 </template>
 

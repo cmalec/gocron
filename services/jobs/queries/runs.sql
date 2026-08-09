@@ -143,3 +143,37 @@ GROUP BY
   day
 ORDER BY
   day;
+
+-- name: GetRecentRuns :many
+SELECT
+  id,
+  job_name,
+  job_slug,
+  status_id,
+  start_time,
+  end_time
+FROM
+  runs
+ORDER BY
+  start_time DESC
+LIMIT
+  ?;
+
+-- name: GetJobSuccessRates :many
+SELECT
+  job_slug,
+  CAST(
+    SUM(
+      CASE
+        WHEN status_id = 3 THEN 1
+        ELSE 0
+      END
+    ) AS INTEGER
+  ) AS succeeded,
+  COUNT(*) AS total
+FROM
+  runs
+WHERE
+  status_id != 1
+GROUP BY
+  job_slug;
