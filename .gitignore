@@ -215,3 +215,4 @@ internal/webui/dist/*
 tmp/
 
 web/src/client/
+/.idea/

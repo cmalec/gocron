@@ -11,6 +11,8 @@ A self-hosted task scheduler built with Go and Vue.js. Define recurring jobs in 
 
 </div>
 
+> This fork keeps the under-the-hood backend the same mostly, with my take on an improved UI. See Screenshots section
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -302,30 +304,19 @@ Pre-installing backup tools (`restic`, `borgbackup`, `docker`, `podman`, etc.) i
 
 ## Screenshots
 
-### Dark mode
+<img src="img/cmalec-home.png">
 
-<p align="center">
-  <img src="screenshots/jobs-dark.webp" width="500" />
-  <img src="screenshots/job-dark.webp" width="500" />
-  <img src="screenshots/terminal-dark.webp" width="500" />
-  <img src="screenshots/filter-dark.webp" width="500" />
-</p>
+### Job Details
 
-### Light mode
+<img src="img/cmalec-details.png">
 
-<p align="center">
-  <img src="screenshots/jobs-light.webp" width="500" />
-  <img src="screenshots/job-light.webp" width="500" />
-  <img src="screenshots/terminal-light.webp" width="500" />
-  <img src="screenshots/filter-light.webp" width="500" />
-</p>
+### Activity List
 
-### API Docs
+<img src="img/cmalec-activity.png">
 
-<p align="center">
-  <img src="screenshots/api-dark.webp" width="500" />
-  <img src="screenshots/api-light.webp" width="500" />
-</p>
+### New Job
+
+<img src="img/cmalec-newjob.png">
 
 ## Development
 
