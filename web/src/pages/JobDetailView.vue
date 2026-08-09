@@ -1,15 +1,36 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useJobs } from '../stores/useJobs';
 import { statusLabel, statusBadgeClass, timeAgo, timeUntil } from '../status';
 import { GetColor } from '../severity';
 import ActivityHeatmap from '../components/ActivityHeatmap.vue';
 import DurationSparkline from '../components/DurationSparkline.vue';
+import JobFormDialog from '../components/JobFormDialog.vue';
 import type { RunView } from '../client/types.gen';
 
 const route = useRoute();
-const { getJob, fetchRuns, fetchRunLogs, fetchHeatmap, heatmaps, busy, pause, resume, runJob } = useJobs();
+const router = useRouter();
+const { getJob, fetchJobs, fetchRuns, fetchRunLogs, fetchHeatmap, heatmaps, busy, pause, resume, runJob, deleteJob } = useJobs();
+
+const showEdit = ref(false);
+const showDeleteConfirm = ref(false);
+const deleting = ref(false);
+
+async function onEditClose(saved: boolean) {
+  showEdit.value = false;
+  if (saved) await fetchJobs();
+}
+
+async function confirmDelete() {
+  if (!job.value) return;
+  deleting.value = true;
+  await deleteJob(job.value.slug);
+  deleting.value = false;
+  showDeleteConfirm.value = false;
+  await fetchJobs();
+  router.push('/');
+}
 
 const slug = computed(() => String(route.params.id ?? ''));
 const job = computed(() => getJob(slug.value));
@@ -77,6 +98,13 @@ watch(
         </div>
       </div>
       <div class="flex gap-2">
+        <button class="btn btn-sm btn-ghost" @click="showEdit = true" title="Edit job">
+          <span class="icon-[fa7-solid--pen] size-3.5"></span>
+          Edit
+        </button>
+        <button class="btn btn-sm btn-ghost text-error" @click="showDeleteConfirm = true" title="Delete job">
+          <span class="icon-[fa7-solid--trash] size-3.5"></span>
+        </button>
         <button class="btn btn-sm" :class="job.disabled ? 'btn-success' : 'btn-warning btn-soft'" @click="job.disabled ? resume(job.slug) : pause(job.slug)">
           <span :class="job.disabled ? 'icon-[fa7-solid--play]' : 'icon-[fa7-solid--pause]'" class="size-3.5"></span>
           {{ job.disabled ? 'Resume' : 'Pause' }}
@@ -85,6 +113,26 @@ watch(
           <span class="icon-[fa7-solid--bolt] size-3.5"></span>
           Run now
         </button>
+      </div>
+    </div>
+
+    <JobFormDialog v-if="showEdit" :job="job" @close="onEditClose" />
+
+    <div v-if="showDeleteConfirm" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" @click.self="showDeleteConfirm = false">
+      <div class="card bg-base-100 w-full max-w-sm shadow-xl">
+        <div class="card-body p-6">
+          <h2 class="card-title">Delete job?</h2>
+          <p class="text-sm text-base-content/70">
+            <strong>{{ job.name }}</strong> will be removed from the config file. Its run history stays in the database until cleaned up.
+          </p>
+          <div class="card-actions justify-end mt-2">
+            <button class="btn btn-ghost btn-sm" @click="showDeleteConfirm = false">Cancel</button>
+            <button class="btn btn-error btn-sm" :disabled="deleting" @click="confirmDelete">
+              <span v-if="deleting" class="loading loading-spinner loading-xs"></span>
+              Delete
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

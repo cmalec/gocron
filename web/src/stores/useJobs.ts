@@ -1,7 +1,19 @@
 import { computed, ref } from 'vue';
 import { createGlobalState } from '@vueuse/core';
-import type { JobView, RunView } from '../client/types.gen';
-import { getJobs, getRuns, getHeatmap, pauseJob, resumeJob, postJob, postJobs } from '../client/sdk.gen';
+import type { JobView, RunView, ActivityRun, JobConfigInput } from '../client/types.gen';
+import {
+  getJobs,
+  getRuns,
+  getHeatmap,
+  getActivity,
+  pauseJob,
+  resumeJob,
+  postJob,
+  postJobs,
+  createJobConfig,
+  updateJobConfig,
+  deleteJobConfig,
+} from '../client/sdk.gen';
 import type { DayStat } from '../client/types.gen';
 
 export type EventInfo = {
@@ -131,6 +143,42 @@ export const useJobs = createGlobalState(() => {
     await postJobs();
   }
 
+  async function fetchActivity(limit = 30): Promise<ActivityRun[]> {
+    try {
+      const result = await getActivity({ query: { limit } });
+      return result.data ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function createJob(input: JobConfigInput): Promise<string | null> {
+    const result = await createJobConfig({ body: input });
+    if (result.error) {
+      const err: any = result.error;
+      return err?.errors?.[0]?.message ?? err?.detail ?? 'Failed to create job';
+    }
+    return null;
+  }
+
+  async function updateJob(name: string, input: JobConfigInput): Promise<string | null> {
+    const result = await updateJobConfig({ path: { name }, body: input });
+    if (result.error) {
+      const err: any = result.error;
+      return err?.errors?.[0]?.message ?? err?.detail ?? 'Failed to update job';
+    }
+    return null;
+  }
+
+  async function deleteJob(name: string): Promise<string | null> {
+    const result = await deleteJobConfig({ path: { name } });
+    if (result.error) {
+      const err: any = result.error;
+      return err?.detail ?? 'Failed to delete job';
+    }
+    return null;
+  }
+
   return {
     idle,
     jobs,
@@ -152,5 +200,9 @@ export const useJobs = createGlobalState(() => {
     resume,
     runJob,
     runAll,
+    fetchActivity,
+    createJob,
+    updateJob,
+    deleteJob,
   };
 });

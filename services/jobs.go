@@ -57,6 +57,8 @@ type JobView struct {
 	config.Job
 	NextRunUnix int64     `json:"next_run_unix"`
 	NextRun     string    `json:"next_run"`
+	SuccessRate float64   `json:"success_rate"`
+	RunCount    int64     `json:"run_count"`
 	Runs        []RunView `json:"runs"`
 }
 
@@ -65,6 +67,16 @@ type DayStat struct {
 	Succeeded int64  `json:"succeeded"`
 	Failed    int64  `json:"failed"`
 	Total     int64  `json:"total"`
+}
+
+type ActivityRun struct {
+	ID            int64  `json:"id"`
+	JobName       string `json:"job_name"`
+	JobSlug       string `json:"job_slug"`
+	StatusID      int64  `json:"status_id"`
+	StartTimeUnix int64  `json:"start_time_unix"`
+	StartTime     string `json:"start_time"`
+	Duration      string `json:"duration"`
 }
 
 type RunView struct {
@@ -276,6 +288,34 @@ func (js *JobService) SetJobDisabled(name string, disabled bool) error {
 	return nil
 }
 
+func (js *JobService) GetActivity(limit int64) []ActivityRun {
+	if limit <= 0 || limit > 100 {
+		limit = 30
+	}
+	rows, err := js.Queries.GetRecentRuns(context.Background(), limit)
+	if err != nil {
+		slog.Error(err.Error())
+		return []ActivityRun{}
+	}
+	result := make([]ActivityRun, 0, len(rows))
+	for _, row := range rows {
+		var duration time.Duration
+		if row.EndTime.Valid {
+			duration = time.Duration(row.EndTime.Int64-row.StartTime) * time.Millisecond
+		}
+		result = append(result, ActivityRun{
+			ID:            row.ID,
+			JobName:       row.JobName,
+			JobSlug:       row.JobSlug,
+			StatusID:      row.StatusID,
+			StartTimeUnix: row.StartTime,
+			StartTime:     formatTime(row.StartTime),
+			Duration:      duration.Truncate(time.Second).String(),
+		})
+	}
+	return result
+}
+
 func (js *JobService) GetDailyStats(name string, days int64) ([]DayStat, error) {
 	job := config.GetJobByName(name)
 	if job == nil {
@@ -425,9 +465,24 @@ func (js *JobService) ListJobs() []JobView {
 			})
 	}
 
+	rates := make(map[string][2]int64)
+	rateRows, err := js.Queries.GetJobSuccessRates(context.Background())
+	if err != nil {
+		slog.Error(err.Error())
+	}
+	for _, row := range rateRows {
+		rates[row.JobSlug] = [2]int64{row.Succeeded, row.Total}
+	}
+
 	result := make([]JobView, 0, len(jobs))
 	for _, job := range jobs {
 		nextUnix, nextFormatted := js.nextRun(job)
+		rate := rates[job.Slug]
+		succeeded, total := rate[0], rate[1]
+		var successRate float64
+		if total > 0 {
+			successRate = float64(succeeded) / float64(total) * 100
+		}
 		result = append(result, JobView{
 			Job: config.Job{
 				Name:        job.Name,
@@ -438,6 +493,8 @@ func (js *JobService) ListJobs() []JobView {
 			},
 			NextRunUnix: nextUnix,
 			NextRun:     nextFormatted,
+			SuccessRate: successRate,
+			RunCount:    total,
 			Runs:        runsByJob[job.Name],
 		})
 	}
