@@ -28,7 +28,6 @@ A self-hosted task scheduler built with Go and Vue.js. Define recurring jobs in 
 - [Safety & security](#safety--security)
 - [Screenshots](#screenshots)
 - [Development](#development)
-- [Star History](#star-history)
 - [License](#license)
 
 ## Quick Start
@@ -321,14 +320,6 @@ Pre-installing backup tools (`restic`, `borgbackup`, `docker`, `podman`, etc.) i
 ## Development
 
 All development workflows — tests, code generation, formatting, dependency updates, and automatic rebuild — are documented in [`AGENTS.md`](AGENTS.md).
-
-## Star History
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=flohoss/gocron&type=Date&theme=dark" />
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=flohoss/gocron&type=Date" />
-  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=flohoss/gocron&type=Date" />
-</picture>
 
 ## License
 
