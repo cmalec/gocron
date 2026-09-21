@@ -28,7 +28,6 @@ A self-hosted task scheduler built with Go and Vue.js. Define recurring jobs in 
 - [Safety & security](#safety--security)
 - [Screenshots](#screenshots)
 - [Development](#development)
-- [Star History](#star-history)
 - [License](#license)
 
 ## Quick Start
@@ -320,63 +319,7 @@ Pre-installing backup tools (`restic`, `borgbackup`, `docker`, `podman`, etc.) i
 
 ## Development
 
-### Run tests
-
-```bash
-# Go tests
-docker compose run --rm go test ./...
-
-# E2E tests (uses a separate e2e config via compose override)
-docker compose -f compose.yml -f compose.e2e.yml --profile test run --rm e2e
-docker compose -f compose.yml -f compose.e2e.yml --profile test down
-```
-
-### Code generation
-
-```bash
-# Generate Go code from SQL queries
-docker compose run --rm backend sqlc generate
-```
-
-### Format
-
-```bash
-# Go
-docker compose run --rm go fmt ./...
-
-# Frontend, SQL, JSON, YAML
-docker compose run --rm format
-```
-
-### Update dependencies
-
-```bash
-# Node packages
-docker compose run --rm npm install
-docker compose run --rm --entrypoint npx npm npm-check-updates -u && docker compose run --rm npm install
-
-# E2E packages
-docker compose run --rm npm-e2e install
-docker compose run --rm --entrypoint npx npm-e2e npm-check-updates -u && docker compose run --rm npm install
-
-# Go packages
-docker compose run --rm go get -u ./...
-docker compose run --rm go mod tidy
-```
-
-### Automatic rebuild and reload
-
-```sh
-docker compose up
-```
-
-## Star History
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=flohoss/gocron&type=Date&theme=dark" />
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=flohoss/gocron&type=Date" />
-  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=flohoss/gocron&type=Date" />
-</picture>
+All development workflows — tests, code generation, formatting, dependency updates, and automatic rebuild — are documented in [`AGENTS.md`](AGENTS.md).
 
 ## License
 
