@@ -216,3 +216,9 @@ tmp/
 
 web/src/client/
 /.idea/
+
+# Go coverage output (assets/coverage.svg is tracked: it holds the README badge)
+coverage.out
+coverage.out.raw
+coverage.txt
+coverage.html

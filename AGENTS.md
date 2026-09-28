@@ -6,6 +6,7 @@ Read before making changes. Rule-oriented and self-contained.
 
 - **CLEAN code.** Small functions, single responsibility, descriptive names, no dead code, no overengineering.
 - **No comments.** Use descriptive function or service names instead.
+- **Test comments are allowed** when the tested behaviour is not obvious from the test name: a short block above the test explaining what it asserts and why it exists.
 - **No code markers** like `// ... existing code ...` in edits.
 - Go imports: stdlib, then external, then internal (`github.com/flohoss/gocron/...`), each block alphabetical.
 - Never edit generated files (`services/jobs/*.sql.go`, `models.go`, `web/src/client/`).
@@ -15,8 +16,22 @@ Read before making changes. Rule-oriented and self-contained.
 - **Code generation:** `docker compose run --rm backend sqlc generate`
 - **Backend format:** `docker compose run --rm go fmt ./...`
 - **Format (all non-Go files):** `docker compose run --rm format`
-- **Tests:** `docker compose run --rm go test ./services/ ./config/ ./internal/...`
-- **E2E tests:** `docker compose -f compose.yml -f compose.e2e.yml --profile test run --rm e2e` then `... down`
+- **Tests:** `docker compose run --rm go test ./...`
+- **Coverage:** `docker compose run --rm --entrypoint sh go scripts/coverage.sh` — excludes generated files (detected by the `// Code generated ... DO NOT EDIT.` marker)
+- **Coverage badge:** `docker compose run --rm --entrypoint sh go scripts/coverage-badge.sh` — writes `assets/coverage.svg`, which CI commits to `main` when the value changes
+- **E2E tests (Headless):**
+  ```sh
+  docker compose -f compose.yml -f compose.e2e.yml --profile test run --rm e2e
+  # teardown when done:
+  docker compose -f compose.yml -f compose.e2e.yml --profile dev --profile test down
+  ```
+- **E2E interactive (Cypress GUI):**
+  ```sh
+  docker compose -f compose.yml -f compose.e2e.yml --profile dev --profile test up -d backend frontend
+  npm --prefix web/e2e run open
+  # teardown when done:
+  docker compose -f compose.yml -f compose.e2e.yml --profile dev --profile test down
+  ```
 - **Rebuild & reload:** `docker compose up`
 
 Only commit if format and tests pass.

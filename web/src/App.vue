@@ -5,7 +5,7 @@ import JobFormDialog from './components/JobFormDialog.vue';
 import { useJobs } from './stores/useJobs';
 import { useEventSource } from '@vueuse/core';
 import { onMounted, ref, watch } from 'vue';
-import { BackendURL } from './main';
+import { BackendURL } from './backend';
 
 const { parseEventInfo, fetchJobs, fetchAllHeatmaps } = useJobs();
 const showNewJob = ref(false);

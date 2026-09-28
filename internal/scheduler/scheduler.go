@@ -25,8 +25,9 @@ func (c *Scheduler) Stop() context.Context {
 	return c.scheduler.Stop()
 }
 
-func (c *Scheduler) Add(cronString string, cmd func()) {
-	c.scheduler.AddFunc(cronString, cmd)
+func (c *Scheduler) Add(cronString string, cmd func()) error {
+	_, err := c.scheduler.AddFunc(cronString, cmd)
+	return err
 }
 
 func (c *Scheduler) AddJob(key string, cronString string, cmd func()) error {
