@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
+import { useAuth } from '../stores/useAuth';
 import { useJobs } from '../stores/useJobs';
 
 const router = useRouter();
 const { search, busy, loading, runAll } = useJobs();
+const { authEnabled, logout } = useAuth();
 const emit = defineEmits<{ newJob: [] }>();
 </script>
 
@@ -42,6 +44,9 @@ const emit = defineEmits<{ newJob: [] }>();
         <a href="/api/docs" class="btn btn-ghost btn-sm btn-circle" title="API docs">
           <span class="icon-[simple-icons--openapiinitiative] size-4"></span>
         </a>
+        <button v-if="authEnabled" @click="logout" class="btn btn-ghost btn-sm btn-circle" title="Logout">
+          <span class="icon-[fa7-solid--right-from-bracket] size-4"></span>
+        </button>
       </div>
     </div>
   </header>

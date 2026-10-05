@@ -34,6 +34,7 @@ func (jh *JobHandler) updateJobConfigOperation() huma.Operation {
 		Summary:     "Update job config",
 		Description: "Update a job's schedule and commands, written back to the config file.",
 		Tags:        []string{"Config"},
+		Security:    []map[string][]string{{sessionScheme: {}}},
 	}
 }
 
@@ -71,6 +72,7 @@ func (jh *JobHandler) createJobConfigOperation() huma.Operation {
 		Summary:     "Create job",
 		Description: "Add a new job, written back to the config file.",
 		Tags:        []string{"Config"},
+		Security:    []map[string][]string{{sessionScheme: {}}},
 	}
 }
 
@@ -106,6 +108,7 @@ func (jh *JobHandler) deleteJobConfigOperation() huma.Operation {
 		Summary:     "Delete job",
 		Description: "Remove a job from the config file.",
 		Tags:        []string{"Config"},
+		Security:    []map[string][]string{{sessionScheme: {}}},
 	}
 }
 

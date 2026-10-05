@@ -1,9 +1,10 @@
-import { createRouter, createWebHistory } from 'vue-router';
+import { createRouter, createWebHistory, isNavigationFailure, NavigationFailureType } from 'vue-router';
 
 import DashboardView from './pages/DashboardView.vue';
 import JobDetailView from './pages/JobDetailView.vue';
 import ActivityView from './pages/ActivityView.vue';
 import CommandView from './pages/CommandView.vue';
+import { useAuth } from './stores/useAuth';
 
 const routes = [
   { path: '/', name: 'dashboard', component: DashboardView, meta: { title: 'GoCron' } },
@@ -17,9 +18,22 @@ const router = createRouter({
   routes,
 });
 
-router.beforeEach((to, _, next) => {
+router.beforeEach(async (to) => {
   document.title = `${to.meta.title}`;
-  next();
+
+  const auth = useAuth();
+  if (!auth.ready.value) await auth.fetchCurrentUser();
+
+  if (auth.authEnabled.value && !auth.authenticated.value) {
+    window.location.href = '/api/auth/login';
+    return false;
+  }
+});
+
+router.onError((error) => {
+  if (!isNavigationFailure(error, NavigationFailureType.aborted | NavigationFailureType.cancelled)) {
+    throw error;
+  }
 });
 
 export default router;

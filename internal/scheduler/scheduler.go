@@ -2,14 +2,15 @@ package scheduler
 
 import (
 	"context"
+	"time"
 
 	"github.com/robfig/cron/v3"
 )
 
 type EntryID = cron.EntryID
 
-func New() *Scheduler {
-	s := cron.New()
+func New(location *time.Location) *Scheduler {
+	s := cron.New(cron.WithLocation(location))
 	s.Start()
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	return &Scheduler{scheduler: s, parser: parser}
@@ -55,3 +56,7 @@ func (c *Scheduler) HasJob(key string) bool {
 }
 
 func (c *Scheduler) GetParser() *cron.Parser { return &c.parser }
+
+func (c *Scheduler) Location() *time.Location {
+	return c.scheduler.Location()
+}

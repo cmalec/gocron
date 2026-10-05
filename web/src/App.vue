@@ -3,19 +3,25 @@ import { RouterView } from 'vue-router';
 import AppHeader from './components/AppHeader.vue';
 import JobFormDialog from './components/JobFormDialog.vue';
 import { useJobs } from './stores/useJobs';
+import { useAuth } from './stores/useAuth';
 import { useEventSource } from '@vueuse/core';
-import { onMounted, ref, watch } from 'vue';
-import { BackendURL } from './backend';
+import { computed, onMounted, ref, watch } from 'vue';
 
 const { parseEventInfo, fetchJobs, fetchAllHeatmaps } = useJobs();
+const { fetchCurrentUser, canUseApp } = useAuth();
 const showNewJob = ref(false);
 
 onMounted(async () => {
-  await fetchJobs();
-  fetchAllHeatmaps(90);
+  await fetchCurrentUser();
+  if (canUseApp.value) {
+    await fetchJobs();
+    fetchAllHeatmaps(90);
+  }
 });
 
-const { data, close } = useEventSource(BackendURL + '/api/events?stream=status', [], {
+const streamUrl = computed(() => (canUseApp.value ? '/api/events?stream=status' : undefined));
+
+const { data, close } = useEventSource(streamUrl, [], {
   autoReconnect: { delay: 100 },
 });
 addEventListener('beforeunload', () => {

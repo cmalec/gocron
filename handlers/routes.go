@@ -4,11 +4,13 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humaecho"
 	"github.com/flohoss/gocron/config"
+	"github.com/flohoss/gocron/internal/auth"
 	"github.com/flohoss/gocron/internal/buildinfo"
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
@@ -29,9 +31,15 @@ func InitRouter() *echo.Echo {
 	e := echo.NewWithConfig(echo.Config{
 		Logger:      slog.Default(),
 		IPExtractor: buildIPExtractor(config.GetTrustedProxies()),
+		// Group middleware must stay scoped to the routes registered through
+		// the group. Without this flag Echo auto-registers 404 catch-alls for
+		// every group with middleware, which would run the session check on
+		// every unmatched request including the SPA shell.
+		NoGroupAutoRegister404Routes: true,
 	})
 
 	e.Use(middleware.Recover())
+	e.Use(echoContextMiddleware)
 	e.Use(buildCORSMiddleware())
 	e.Use(buildRateLimitMiddleware())
 	e.Use(buildRequestLoggerMiddleware())
@@ -47,13 +55,18 @@ func InitRouter() *echo.Echo {
 }
 
 func buildRequestLoggerMiddleware() echo.MiddlewareFunc {
-	if config.GetLogLevel() != slog.LevelDebug {
-		return func(next echo.HandlerFunc) echo.HandlerFunc {
-			return next
+	requestLogger := middleware.RequestLogger()
+
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		withLogger := requestLogger(next)
+		return func(c *echo.Context) error {
+			if config.GetLogLevel() != slog.LevelDebug {
+				return next(c)
+			}
+
+			return withLogger(c)
 		}
 	}
-
-	return middleware.RequestLogger()
 }
 
 func buildIPExtractor(trustedProxies []string) echo.IPExtractor {
@@ -79,10 +92,17 @@ func buildIPExtractor(trustedProxies []string) echo.IPExtractor {
 }
 
 func buildCORSMiddleware() echo.MiddlewareFunc {
-	settings := config.GetCORSSettings()
-
 	return middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins: settings.AllowOrigins,
+		UnsafeAllowOriginFunc: func(c *echo.Context, origin string) (string, bool, error) {
+			allowed := config.GetCORSSettings().AllowOrigins
+			if slices.Contains(allowed, "*") {
+				return "*", true, nil
+			}
+			if slices.Contains(allowed, origin) {
+				return origin, true, nil
+			}
+			return "", false, nil
+		},
 	})
 }
 
@@ -104,7 +124,7 @@ func buildRateLimitMiddleware() echo.MiddlewareFunc {
 	})
 }
 
-func SetupRouter(e *echo.Echo, jh *JobHandler, ch *CommandHandler) {
+func SetupRouter(e *echo.Echo, jh *JobHandler, ch *CommandHandler, ah *AuthHandler) {
 	e.GET("/health", healthHandler)
 	e.HEAD("/health", healthHandler)
 
@@ -112,9 +132,23 @@ func SetupRouter(e *echo.Echo, jh *JobHandler, ch *CommandHandler) {
 	h.OpenAPIPath = "/api/openapi"
 	h.DocsPath = "/api/docs"
 	h.SchemasPath = "/api/schemas"
-	humaAPI := humaecho.New(e, h)
+	h.Servers = []*huma.Server{{URL: ""}}
+	h.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+		sessionScheme: {
+			Type:        "apiKey",
+			Name:        auth.SessionCookieName,
+			In:          "cookie",
+			Description: "Session cookie issued by /api/auth/callback.",
+		},
+	}
 
-	e.GET("/api/events", jh.JobService.GetHandler())
+	// Only the routes registered through this group carry the session check.
+	// Echo applies group middleware by route, so the public spec, docs, schemas,
+	// SPA shell, assets and the auth lifecycle stay open without any skipper.
+	protected := e.Group("", ah.Auth.Middleware())
+	humaAPI := humaecho.NewWithGroup(e, protected, h)
+
+	protected.GET("/api/events", jh.JobService.GetHandler())
 	huma.Register(humaAPI, ch.executeCommandOperation(), ch.executeCommandHandler)
 	huma.Register(humaAPI, jh.listJobsOperation(), jh.listJobsHandler)
 	huma.Register(humaAPI, jh.listRunsOperation(), jh.listRunsHandler)
@@ -129,15 +163,20 @@ func SetupRouter(e *echo.Echo, jh *JobHandler, ch *CommandHandler) {
 	huma.Register(humaAPI, jh.executeJobOperation(), jh.executeJobHandler)
 	huma.Register(humaAPI, jh.changeJobOperation(), jh.changeJobHandler)
 
+	ah.Register(humaecho.New(e, h))
+
+	e.GET("/api/auth/login", ah.loginHandler)
+	e.GET("/api/auth/callback", ah.callbackHandler)
+
 	e.GET("/robots.txt", func(ctx *echo.Context) error {
 		return ctx.String(http.StatusOK, "User-agent: *\nDisallow: /")
 	})
 
 	registerStaticRoutes(e)
-	registerFallbackRoutes(e)
+	registerFallbackRoutes(e, ah.Auth)
 }
 
-func registerFallbackRoutes(e *echo.Echo) {
+func registerFallbackRoutes(e *echo.Echo, auth AuthService) {
 	e.RouteNotFound("/api/*", func(ctx *echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "Not found")
 	})
@@ -146,6 +185,13 @@ func registerFallbackRoutes(e *echo.Echo) {
 		if ctx.Request().Method != http.MethodGet {
 			return echo.NewHTTPError(http.StatusNotFound, "Not found")
 		}
+
+		if auth.Enabled() {
+			if _, err := auth.Authenticate(ctx); err != nil {
+				return redirect(ctx, "/api/auth/login")
+			}
+		}
+
 		return ctx.Render(http.StatusOK, "index.html", nil)
 	})
 }

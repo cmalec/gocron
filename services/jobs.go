@@ -125,7 +125,7 @@ func (js *JobService) setupJobs() {
 		_ = js.Scheduler.Stop()
 	}
 
-	js.Scheduler = scheduler.New()
+	js.Scheduler = scheduler.New(config.GetLocation())
 	for _, job := range config.GetJobs() {
 		js.scheduleJob(job)
 	}
@@ -181,15 +181,19 @@ func (js *JobService) setupViperWatcher() {
 
 	viper.OnConfigChange(func(e fsnotify.Event) {
 		debounce(2*time.Second, func() {
-			slog.Info("Config changed, reloading jobs")
-			err := config.ValidateAndLoadConfig(viper.GetViper())
-			if err != nil {
+			if err := config.ValidateAndLoadConfig(viper.GetViper()); err != nil {
 				slog.Error("Failed to reload configuration, keeping old settings", "error", err)
 				return
 			}
-			slog.Info("Config reloaded successfully, reloading jobs")
+
 			js.setupJobs()
 			js.Events.SendJobEvent(js.IsIdle(), nil, js.ListJobs())
+
+			slog.Info("Configuration reloaded",
+				"jobs", len(config.GetJobs()),
+				"schedules", len(config.GetAllCrons()),
+				"auth_enabled", config.GetAuth().OIDC.Enabled,
+			)
 		})
 	})
 
@@ -224,10 +228,14 @@ func (js *JobService) IsIdle() bool {
 }
 
 func (js *JobService) Shutdown() {
+	var schedulerDone <-chan struct{}
 	if js.Scheduler != nil {
-		<-js.Scheduler.Stop().Done()
+		schedulerDone = js.Scheduler.Stop().Done()
 	}
 	js.jobCancel()
+	if schedulerDone != nil {
+		<-schedulerDone
+	}
 	deadline := time.Now().Add(8 * time.Second)
 	for {
 		js.jobMu.Lock()

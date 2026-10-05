@@ -23,3 +23,12 @@ CREATE TABLE IF NOT EXISTS job_state (
   job_slug TEXT PRIMARY KEY,
   disabled INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+  jti TEXT PRIMARY KEY,
+  subject TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions (expires_at);

@@ -14,6 +14,7 @@ import (
 
 	"github.com/flohoss/gocron/config"
 	"github.com/flohoss/gocron/handlers"
+	"github.com/flohoss/gocron/internal/auth"
 	"github.com/flohoss/gocron/internal/buildinfo"
 	"github.com/flohoss/gocron/internal/cli"
 	"github.com/flohoss/gocron/internal/events"
@@ -36,7 +37,7 @@ func main() {
 	config.New(opts.ConfigFile)
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: config.GetLogLevel(),
+		Level: config.LogLevelVar(),
 	}))
 	slog.SetDefault(logger)
 
@@ -48,6 +49,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	authService := auth.New(js.Queries)
+
 	js.SetEvents(events.New(func(streamID string) {
 		if streamID == events.EventStatus {
 			js.Events.SendJobEvent(js.IsIdle(), nil, nil)
@@ -57,18 +60,22 @@ func main() {
 
 	cs := services.NewCommandService(js.Events)
 	ch := handlers.NewCommandHandler(cs)
+	ah := handlers.NewAuthHandler(authService)
 
 	e := handlers.InitRouter()
-	handlers.SetupRouter(e, jh, ch)
+	handlers.SetupRouter(e, jh, ch, ah)
 
 	slog.Info("Starting server", "url", fmt.Sprintf("http://%s", config.GetServer()))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	shutdownDone := make(chan struct{})
 	go func() {
 		<-ctx.Done()
 		slog.Info("Shutting down scheduler and running jobs")
 		js.Shutdown()
+		authService.Shutdown()
+		close(shutdownDone)
 	}()
 
 	sc := echo.StartConfig{
@@ -86,4 +93,6 @@ func main() {
 	if err := sc.Start(ctx, e); err != nil {
 		slog.Error("Failed to start server", "error", err)
 	}
+	stop()
+	<-shutdownDone
 }

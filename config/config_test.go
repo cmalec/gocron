@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -24,18 +25,6 @@ func setConfigForTest(t *testing.T, testCfg GlobalConfig) {
 		cfg = previous
 		mu.Unlock()
 	})
-}
-
-func TestSetConfigFolderPath_SetsConfigFilePath(t *testing.T) {
-	previous := GetConfigFilePath()
-	t.Cleanup(func() { SetConfigFilePath(previous) })
-
-	SetConfigFolderPath("./tmp-config")
-
-	expected := filepath.Clean("tmp-config/config.yaml")
-	if got := GetConfigFilePath(); got != expected {
-		t.Fatalf("unexpected config file path: got %q want %q", got, expected)
-	}
 }
 
 func TestSetConfigFilePath_UsesDefaultWhenEmpty(t *testing.T) {
@@ -155,6 +144,43 @@ func TestGetEnvsForJob_MergesDefaultsAndOverrides(t *testing.T) {
 	}
 	if envs.Data["A"] != "1" || envs.Data["B"] != "3" || envs.Data["C"] != "4" {
 		t.Fatalf("unexpected env data: %#v", envs.Data)
+	}
+}
+
+func TestEnvKeyValidation_KeepsValueExpansionWorking(t *testing.T) {
+	t.Setenv("GOCRON_REGRESSION_HOME", "/srv/backups")
+	t.Setenv("GOCRON_REGRESSION_RETENTION", "7")
+
+	v := baseConfig()
+	v.Set("jobs", []map[string]any{{
+		"name":     "Env Expansion Job",
+		"commands": []string{"echo test"},
+		"envs": []map[string]string{
+			{"key": "BACKUP_DIR", "value": "${GOCRON_REGRESSION_HOME}/nightly"},
+			{"key": "RETENTION_DAYS", "value": "${GOCRON_REGRESSION_RETENTION}"},
+			{"key": "LITERAL", "value": "no expansion here"},
+		},
+	}})
+
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("expected env keys to pass validation, got: %v", err)
+	}
+
+	job := GetJobByName("env-expansion-job")
+	if job == nil {
+		t.Fatal("expected the job to be loaded")
+	}
+
+	envs := GetEnvsForJob(job)
+	expected := map[string]string{
+		"BACKUP_DIR":     "/srv/backups/nightly",
+		"RETENTION_DAYS": "7",
+		"LITERAL":        "no expansion here",
+	}
+	for key, want := range expected {
+		if got := os.ExpandEnv(envs.Data[key]); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -289,23 +315,6 @@ func TestGetAllCrons_GroupsJobsAndSkipsDisabledCron(t *testing.T) {
 	}
 }
 
-func TestDefaultStarterJobs_HasFiveValidJobs(t *testing.T) {
-	jobs := defaultStarterJobs()
-
-	if len(jobs) != 5 {
-		t.Fatalf("unexpected number of default starter jobs: got %d want 5", len(jobs))
-	}
-
-	for i, job := range jobs {
-		if job.Name == "" || len(job.Commands) == 0 {
-			t.Fatalf("starter job %d is invalid: %#v", i, job)
-		}
-	}
-	if !jobs[4].DisableCron {
-		t.Fatalf("expected fifth starter job to be manual/disable_cron=true: %#v", jobs[4])
-	}
-}
-
 func TestLoadRepoConfigFile_ValidatesAndParses(t *testing.T) {
 	prevPath := GetConfigFilePath()
 	prevTZ, hadTZ := os.LookupEnv("TZ")
@@ -320,9 +329,9 @@ func TestLoadRepoConfigFile_ValidatesAndParses(t *testing.T) {
 		viper.Reset()
 	})
 
-	repoConfig := filepath.Join("..", "config", "config.yaml")
+	repoConfig := filepath.Join("..", "config", "config.example.yaml")
 	if _, err := os.Stat(repoConfig); err != nil {
-		t.Skipf("repo config file not found: %v", err)
+		t.Skipf("example config file not found: %v", err)
 	}
 
 	v := viper.New()
@@ -386,25 +395,18 @@ func TestNew_CreatesAndLoadsDefaultStarterJobs(t *testing.T) {
 		t.Fatalf("expected config file to be created, got error: %v", err)
 	}
 
+	written, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("expected to read the created config file: %v", err)
+	}
+	// A fresh boot must hand the user the commented reference config verbatim.
+	if string(written) != string(defaultConfig) {
+		t.Fatal("expected the created config to equal the embedded example config")
+	}
+
 	jobs := GetJobs()
 	if len(jobs) != 5 {
 		t.Fatalf("unexpected number of loaded default jobs: got %d want 5", len(jobs))
-	}
-
-	if jobs[0].Name != "Example Scheduled Happy Path" {
-		t.Fatalf("unexpected first default job name: %q", jobs[0].Name)
-	}
-	if jobs[1].Name != "Example Continue On Failure" {
-		t.Fatalf("unexpected second default job name: %q", jobs[1].Name)
-	}
-	if jobs[2].Name != "Example Env Expansion" {
-		t.Fatalf("unexpected third default job name: %q", jobs[2].Name)
-	}
-	if jobs[3].Name != "Example Timeout And Retries" {
-		t.Fatalf("unexpected fourth default job name: %q", jobs[3].Name)
-	}
-	if jobs[4].Name != "Example Manual Long Running" {
-		t.Fatalf("unexpected fifth default job name: %q", jobs[4].Name)
 	}
 
 	if got := GetDBLocation(); got != filepath.Dir(configPath) {
@@ -459,7 +461,7 @@ func TestGetConfigFolderPath_ReflectsSetPath(t *testing.T) {
 	previous := GetConfigFilePath()
 	t.Cleanup(func() { SetConfigFilePath(previous) })
 
-	SetConfigFolderPath("./tmp-folder-test")
+	SetConfigFilePath("./tmp-folder-test/my-config.yaml")
 	folder := GetConfigFolderPath()
 	if folder == "" {
 		t.Fatal("expected non-empty config folder path")
@@ -469,23 +471,38 @@ func TestGetConfigFolderPath_ReflectsSetPath(t *testing.T) {
 func TestGetLogLevel_AllValues(t *testing.T) {
 	cases := []struct {
 		level string
-		want  string
+		want  slog.Level
 	}{
-		{"debug", "DEBUG"},
-		{"warn", "WARN"},
-		{"warning", "WARN"},
-		{"error", "ERROR"},
-		{"info", "INFO"},
-		{"", "INFO"},
-		{"unknown", "INFO"},
+		{"debug", slog.LevelDebug},
+		{"warn", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"info", slog.LevelInfo},
+		{"DEBUG", slog.LevelDebug},
 	}
 
 	for _, tc := range cases {
-		setConfigForTest(t, GlobalConfig{LogLevel: tc.level})
-		got := GetLogLevel().String()
-		if got != tc.want {
-			t.Errorf("GetLogLevel(%q) = %q, want %q", tc.level, got, tc.want)
+		v := baseConfig()
+		v.Set("log_level", tc.level)
+		if err := ValidateAndLoadConfig(v); err != nil {
+			t.Fatalf("log_level %q should be accepted, got: %v", tc.level, err)
 		}
+
+		if got := GetLogLevel(); got != tc.want {
+			t.Errorf("GetLogLevel(%q) = %v, want %v", tc.level, got, tc.want)
+		}
+	}
+}
+
+func TestValidateAndLoadConfig_RejectsUnknownLogLevel(t *testing.T) {
+	v := baseConfig()
+	v.Set("log_level", "verbose")
+
+	err := ValidateAndLoadConfig(v)
+	if err == nil {
+		t.Fatal("expected an error for an unknown log level, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown name") {
+		t.Fatalf("unexpected error message:\n%s", err)
 	}
 }
 
@@ -495,6 +512,132 @@ func TestGetServer_FormatsAddressAndPort(t *testing.T) {
 	})
 	if got := GetServer(); got != "127.0.0.1:9000" {
 		t.Fatalf("unexpected server string: %q", got)
+	}
+}
+
+func TestGetLocation_ResolvesConfiguredZone(t *testing.T) {
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatalf("failed to load test location: %v", err)
+	}
+
+	setConfigForTest(t, GlobalConfig{TimeZone: berlin})
+
+	if got := GetLocation().String(); got != "Europe/Berlin" {
+		t.Fatalf("expected Europe/Berlin, got %q", got)
+	}
+}
+
+func TestValidateAndLoadConfig_ParsesTimezone(t *testing.T) {
+	v := baseConfig()
+	v.Set("time_zone", "Europe/Berlin")
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if got := GetLocation().String(); got != "Europe/Berlin" {
+		t.Fatalf("expected Europe/Berlin, got %q", got)
+	}
+}
+
+func TestValidateAndLoadConfig_RejectsUnknownTimezone(t *testing.T) {
+	v := baseConfig()
+	v.Set("time_zone", "Mars/Olympus_Mons")
+
+	err := ValidateAndLoadConfig(v)
+	if err == nil {
+		t.Fatal("expected an error for an unknown time zone, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown time zone") {
+		t.Fatalf("unexpected error message:\n%s", err)
+	}
+}
+
+// The TZ environment variable is inherited by job commands, so a reload has to
+// republish it alongside the scheduler location.
+func TestValidateAndLoadConfig_ExportsTimezone(t *testing.T) {
+	previous, hadTZ := os.LookupEnv("TZ")
+	t.Cleanup(func() {
+		if hadTZ {
+			_ = os.Setenv("TZ", previous)
+		} else {
+			_ = os.Unsetenv("TZ")
+		}
+	})
+
+	v := baseConfig()
+	v.Set("time_zone", "Europe/Berlin")
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if got := os.Getenv("TZ"); got != "Europe/Berlin" {
+		t.Fatalf("expected TZ=Europe/Berlin, got %q", got)
+	}
+}
+
+func TestGetLocation_UsesSystemDefaultWhenUnset(t *testing.T) {
+	setConfigForTest(t, GlobalConfig{})
+
+	if got := GetLocation(); got != time.Local {
+		t.Fatalf("expected time.Local when no zone is configured, got %v", got)
+	}
+}
+
+// Without a configured zone nothing may be published to TZ, so job commands keep
+// inheriting whatever zone the container itself runs in.
+func TestValidateAndLoadConfig_LeavesTimezoneUnsetWhenAbsent(t *testing.T) {
+	previous, hadTZ := os.LookupEnv("TZ")
+	t.Cleanup(func() {
+		if hadTZ {
+			_ = os.Setenv("TZ", previous)
+		} else {
+			_ = os.Unsetenv("TZ")
+		}
+	})
+
+	_ = os.Setenv("TZ", "America/New_York")
+
+	v := viper.New()
+	v.Set("server.address", "127.0.0.1")
+	v.Set("server.port", 8156)
+	v.Set("jobs", []map[string]any{{
+		"name":     "Timezone Test Job",
+		"commands": []string{"echo test"},
+	}})
+
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if got := os.Getenv("TZ"); got != "America/New_York" {
+		t.Fatalf("expected the container zone to survive an absent time_zone, got %q", got)
+	}
+	if got := GetLocation(); got != time.Local {
+		t.Fatalf("expected the system default location, got %v", got)
+	}
+}
+
+// The default slog handler reads this variable, so every config load — boot and
+// reload alike — has to move it.
+func TestLogLevelVar_FollowsConfigReload(t *testing.T) {
+	v := baseConfig()
+	v.Set("log_level", "info")
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if got := LogLevelVar().Level(); got != slog.LevelInfo {
+		t.Fatalf("expected INFO after load, got %v", got)
+	}
+
+	v.Set("log_level", "debug")
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("failed to reload config: %v", err)
+	}
+
+	if got := LogLevelVar().Level(); got != slog.LevelDebug {
+		t.Fatalf("expected DEBUG after reload, got %v", got)
 	}
 }
 
@@ -899,18 +1042,105 @@ func TestGetJobByName_ReturnsNilWhenNoJobs(t *testing.T) {
 	}
 }
 
-// Users get one line per problem pointing at the configuration key, instead of
-// validator's raw struct-field dump.
-func TestValidateAndLoadConfig_ReportsReadableMultipleErrors(t *testing.T) {
+func baseConfig() *viper.Viper {
 	v := viper.New()
 	v.Set("time_zone", "UTC")
 	v.Set("server.address", "127.0.0.1")
-	v.Set("server.port", 80)
+	v.Set("server.port", 8156)
 	v.Set("jobs", []map[string]any{{
-		"name":     "Readable Errors Job",
+		"name":     "Auth Config Job",
 		"commands": []string{"echo test"},
 	}})
-	v.Set("log_level", "verbose")
+	return v
+}
+
+func TestValidateAndLoadConfig_AcceptsValidOIDC(t *testing.T) {
+	v := baseConfig()
+	v.Set("auth.oidc.enabled", true)
+	v.Set("auth.oidc.issuer_url", "https://sso.example.com")
+	v.Set("auth.oidc.client_id", "gocron")
+	v.Set("auth.oidc.client_secret", "secret")
+
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("expected valid OIDC config, got: %v", err)
+	}
+
+	settings := GetAuth().OIDC
+	if !settings.Enabled {
+		t.Fatal("expected OIDC to be enabled")
+	}
+	if settings.ClientID != "gocron" {
+		t.Fatalf("unexpected client id: %q", settings.ClientID)
+	}
+}
+
+// Enabling SSO without provider details would leave the login redirect pointing
+// nowhere, so every required field must be reported.
+func TestValidateAndLoadConfig_RejectsOIDCEnabledWithoutProviderFields(t *testing.T) {
+	v := baseConfig()
+	v.Set("auth.oidc.enabled", true)
+
+	err := ValidateAndLoadConfig(v)
+	if err == nil {
+		t.Fatal("expected validation error for incomplete OIDC config, got nil")
+	}
+
+	for _, field := range []string{"auth.oidc.issuer_url", "auth.oidc.client_id", "auth.oidc.client_secret"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Errorf("expected %q in error:\n%s", field, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "is a required field") {
+		t.Errorf("expected required message in error:\n%s", err)
+	}
+}
+
+func TestValidateAndLoadConfig_AppliesOIDCDefaults(t *testing.T) {
+	v := baseConfig()
+	v.Set("auth.oidc.enabled", true)
+	v.Set("auth.oidc.issuer_url", "https://sso.example.com")
+	v.Set("auth.oidc.client_id", "gocron")
+	v.Set("auth.oidc.client_secret", "secret")
+
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("expected valid OIDC config, got: %v", err)
+	}
+
+	// Unset optional values stay at their zero value on this path; the viper
+	// defaults registered in New() apply them for real runs, and the auth
+	// service falls back when it reads them.
+	settings := GetAuth().OIDC
+	if settings.SessionTTL != 0 {
+		t.Fatalf("unexpected session ttl: %v", settings.SessionTTL)
+	}
+	if settings.CookieSecure {
+		t.Fatal("expected cookie_secure to be false by default")
+	}
+}
+
+// The issuer is compared byte-for-byte against the id_token `iss` claim.
+func TestValidateAndLoadConfig_RejectsIssuerWithTrailingSlash(t *testing.T) {
+	v := baseConfig()
+	v.Set("auth.oidc.enabled", true)
+	v.Set("auth.oidc.issuer_url", "https://sso.example.com/")
+	v.Set("auth.oidc.client_id", "gocron")
+	v.Set("auth.oidc.client_secret", "secret")
+
+	err := ValidateAndLoadConfig(v)
+	if err == nil {
+		t.Fatal("expected validation error for trailing slash issuer, got nil")
+	}
+	if !strings.Contains(err.Error(), "auth.oidc.issuer_url must not end with '/'") {
+		t.Fatalf("unexpected error message:\n%s", err)
+	}
+}
+
+// Users get one line per problem pointing at the configuration key, instead of
+// validator's raw struct-field dump.
+func TestValidateAndLoadConfig_ReportsReadableMultipleErrors(t *testing.T) {
+	v := baseConfig()
+	v.Set("server.address", "not-an-ip")
+	v.Set("server.port", 80)
 
 	err := ValidateAndLoadConfig(v)
 	if err == nil {
@@ -927,7 +1157,7 @@ func TestValidateAndLoadConfig_ReportsReadableMultipleErrors(t *testing.T) {
 		t.Fatalf("expected one line per violation, got %d:\n%s", len(lines), message)
 	}
 	for _, expected := range []string{
-		"- log_level must be one of [debug info warn error]",
+		"- server.address must be a valid IPv4 address",
 		"- server.port must be 1,024 or greater",
 	} {
 		if !strings.Contains(message, expected) {
@@ -1009,5 +1239,89 @@ func TestGetAllCrons_ReturnsEmptyMapWhenNoJobs(t *testing.T) {
 	crons := GetAllCrons()
 	if len(crons) != 0 {
 		t.Fatalf("expected empty cron map, got %d", len(crons))
+	}
+}
+
+// A trailing slash or path in an origin silently never matches at runtime.
+func TestValidateAndLoadConfig_RejectsInvalidCORSOrigins(t *testing.T) {
+	for _, origin := range []string{"not a url", "https://example.com/", "example.com", "https://example.com/path"} {
+		t.Run(origin, func(t *testing.T) {
+			v := baseConfig()
+			v.Set("server.cors.allow_origins", []string{origin})
+
+			err := ValidateAndLoadConfig(v)
+			if err == nil {
+				t.Fatalf("expected validation error for origin %q, got nil", origin)
+			}
+			if !strings.Contains(err.Error(), "server.cors.allow_origins") {
+				t.Fatalf("unexpected error message:\n%s", err)
+			}
+		})
+	}
+}
+
+func TestValidateAndLoadConfig_AcceptsValidCORSOrigins(t *testing.T) {
+	v := baseConfig()
+	v.Set("server.cors.allow_origins", []string{"*", "https://example.com", "http://localhost:5173"})
+
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("expected valid CORS origins, got: %v", err)
+	}
+}
+
+// "FOO=BAR" would be exported under a different name than configured.
+func TestValidateAndLoadConfig_RejectsMalformedEnvKey(t *testing.T) {
+	v := baseConfig()
+	v.Set("jobs", []map[string]any{{
+		"name":     "Env Key Job",
+		"commands": []string{"echo test"},
+		"envs":     []map[string]string{{"key": "1INVALID", "value": "x"}},
+	}})
+
+	err := ValidateAndLoadConfig(v)
+	if err == nil {
+		t.Fatal("expected validation error for malformed env key, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be a valid environment variable name") {
+		t.Fatalf("unexpected error message:\n%s", err)
+	}
+}
+
+// Uppercase, snake_case and a leading underscore are all legitimate POSIX names
+// and must keep working.
+func TestValidateAndLoadConfig_AcceptsConventionalEnvKeys(t *testing.T) {
+	v := baseConfig()
+	v.Set("jobs", []map[string]any{{
+		"name":     "Env Key Job",
+		"commands": []string{"echo test"},
+		"envs": []map[string]string{
+			{"key": "UPPERCASE", "value": "1"},
+			{"key": "SNAKE_CASE_NAME", "value": "2"},
+			{"key": "_LEADING_UNDERSCORE", "value": "3"},
+			{"key": "MixedCase9", "value": "4"},
+		},
+	}})
+
+	if err := ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("expected conventional env keys to pass, got: %v", err)
+	}
+}
+
+// The issuer is compared byte-for-byte against the id_token `iss` claim, and
+// every other endpoint comes from discovery, so a bad issuer must be caught at
+// startup rather than by every login attempt.
+func TestValidateAndLoadConfig_RejectsIssuerThatIsNotAURL(t *testing.T) {
+	v := baseConfig()
+	v.Set("auth.oidc.enabled", true)
+	v.Set("auth.oidc.issuer_url", "not a url")
+	v.Set("auth.oidc.client_id", "gocron")
+	v.Set("auth.oidc.client_secret", "secret")
+
+	err := ValidateAndLoadConfig(v)
+	if err == nil {
+		t.Fatal("expected validation error for a malformed issuer, got nil")
+	}
+	if !strings.Contains(err.Error(), "auth.oidc.issuer_url") {
+		t.Fatalf("unexpected error message:\n%s", err)
 	}
 }

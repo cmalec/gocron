@@ -23,7 +23,9 @@ A self-hosted task scheduler built with Go and Vue.js. Define recurring jobs in 
   - [Jobs](#jobs)
   - [Software](#software)
   - [Environment overrides](#environment-overrides-gc_)
+  - [Configuration reloads](#configuration-reloads)
   - [Database location](#database-location)
+  - [Single sign-on (OIDC)](#single-sign-on-oidc)
 - [Failure semantics](#failure-semantics)
 - [Safety & security](#safety--security)
 - [Screenshots](#screenshots)
@@ -93,14 +95,15 @@ See the [package](https://search.nixos.org/packages?query=gocron) and [module op
 - **Reverse proxy support** — trust `X-Forwarded-For` from configured proxies for accurate client IPs.
 - **Rate limiting & CORS** — optional per-IP request limits and configurable allowed origins.
 - **Live updates** — job runs stream over Server-Sent Events without polling.
+- **Single sign-on** — optional OIDC login for the UI and API. See [Single sign-on (OIDC)](#single-sign-on-oidc).
 
 ## Configuration
 
-GoCron reads `./config/config.yaml` by default. Override the path with `--config /path/to/config.yaml`. The full reference config is [`config/config.yaml`](config/config.yaml).
+GoCron reads `./config/config.yaml` by default. Override the path with `--config /path/to/config.yaml`. On first boot the file is created automatically from [`config/config.example.yaml`](config/config.example.yaml) — the commented reference config — ready for you to adjust.
 
 ```yaml
-time_zone: 'UTC' # Sets the TZ environment variable for the process
-log_level: 'info' # debug | info | warn | error | off
+time_zone: 'UTC' # All schedules run in this time zone (applied on config reload)
+log_level: 'info' # debug | info | warn | error
 delete_runs_after_days: 7 # Delete run history after N days (0 = keep forever)
 db:
   location: '.' # Absolute, or relative to the config file
@@ -195,9 +198,7 @@ commands:
 
 ### Software
 
-You can install common backup and container tools directly in the image. Available packages: `apprise`, `borgbackup`, `docker`, `git`, `podman`, `rclone`, `rdiff-backup`, `restic`, `rsync`, `logrotate`, `sqlite3`, and `kopia`.
-
-Installation runs at startup and is Debian-only — on any other OS (including non-Debian Linux hosts) it is skipped safely. Recreate the container for changes to take effect.
+Install common backup and container tools at startup instead of rebuilding the image: `apprise`, `borgbackup`, `docker`, `git`, `podman`, `rclone`, `rdiff-backup`, `restic`, `rsync`, `logrotate`, `sqlite3`, and `kopia`.
 
 ```yaml
 software:
@@ -207,11 +208,7 @@ software:
   - name: 'rsync'
 ```
 
-Version formats depend on the installation method:
-
-- **apprise** (via pipx): e.g. `1.2.0`
-- **docker** (via apt): e.g. `5:24.0.5-1~debian.11~bullseye`
-- **Others** (via apt): standard apt version format
+Debian-only — on any other system, including non-Debian Linux hosts, installation is skipped safely. Versions use the tool's own package format: `1.2.0` for **apprise** (pipx), standard apt versions everywhere else (e.g. `5:24.0.5-1~debian.11~bullseye` for **docker**). Recreate the container for changes to take effect.
 
 ### Environment overrides (`GC_`)
 
@@ -233,6 +230,8 @@ server:
 ```
 
 Only these peers are trusted; requests arriving directly are still attributed to their own IP. This affects `remote_ip` in request logs and rate limiting.
+
+When single sign-on is enabled, the same host must forward `/api/auth/`, and the callback URL you register must be the browser-facing address, not the container's internal one.
 
 ### Streaming behind a proxy
 
@@ -292,9 +291,65 @@ server:
 
 The `Access-Control-Allow-Methods` value in preflight responses is Echo's default list (`GET, HEAD, PUT, PATCH, POST, DELETE`). It is advisory: a browser can only reach routes the API actually registers.
 
+### Configuration reloads
+
+GoCron watches the config file and applies changes without a restart. Most settings are read at the point of use, so a save is enough — the log prints a single `Configuration reloaded` line with the resulting job and schedule counts.
+
+Applied on reload:
+
+- `log_level` — including turning request logging on with `debug`
+- `time_zone` — schedules move to the new zone
+- `jobs` and `job_defaults` — the scheduler is rebuilt; in-flight runs finish first
+- `delete_runs_after_days`, `healthcheck`, `terminal`, and all `auth.oidc` settings (including `enabled`)
+- `server.cors.allow_origins`
+
+Requires a restart:
+
+- `server.address` and `server.port` — the listener is bound once
+- `server.rate_limit` and `server.trusted_proxies` — read when the router is built
+- `db.location` and `db.name` — the database connection is opened once
+- `software` — installation runs at startup
+
+`GC_` environment overrides are read at startup only, so they also require a restart.
+
 ### Database location
 
 SQLite data is stored next to the config file by default. Override with `db.location` (absolute, or relative to the config file) and `db.name` (default `db.sqlite`).
+
+### Single sign-on (OIDC)
+
+GoCron can require a login for the UI and API using any OpenID Connect provider, and is tested against [Pocket-ID](https://github.com/pocket-id/pocket-id).
+
+Set up:
+
+1. Create an OIDC client in your provider. Its callback URL is the address you open GoCron with, followed by `/api/auth/callback` — `https://gocron.example.com/api/auth/callback`, or with the port when nothing terminates TLS on 443: `https://gocron.example.com:8156/api/auth/callback`.
+2. Copy the client ID and secret the provider generates.
+3. Enable it in the config:
+
+```yaml
+auth:
+  oidc:
+    enabled: true
+    issuer_url: 'https://id.example.com'
+    client_id: 'gocron'
+    client_secret: 'change-me'
+```
+
+| Setting                       | Default | Description                                                                                                                                           |
+| ----------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                     | `false` | Require a login for the UI and API.                                                                                                                   |
+| `issuer_url`                  | —       | The provider's issuer. Must match the `iss` claim exactly, with no trailing `/`.                                                                      |
+| `client_id` / `client_secret` | —       | Credentials issued by the provider.                                                                                                                   |
+| `session_ttl`                 | `24h`   | How long a login stays valid.                                                                                                                         |
+| `cookie_secure`               | `false` | Set to `true` when GoCron is served over HTTPS. Left `false` over HTTPS, the browser drops the session cookie and bounces you back to the login page. |
+
+**Discovery** — The authorization, token, JWKS, and end-session endpoints come from the provider's `.well-known/openid-configuration`, so only the issuer needs configuring; `RS256` is assumed when the provider advertises no signing algorithm. Discovery is warmed in the background at startup, so the first login does not wait for the round trip. An unreachable provider is retried on the next login attempt — failures are never cached, so a provider that recovers needs no restart — and a login during the outage fails with `503 Service Unavailable` rather than `401`, so it is not mistaken for bad credentials.
+
+**Login flow** — Authorization code grant with PKCE and `state`. `/api/auth/login` redirects to the provider, which returns to `/api/auth/callback`; that sets an opaque, DB-backed session cookie and redirects to the app. With SSO enabled the app shell is protected as well, so an unauthenticated request to any page redirects to `/login`. Only the `openid` scope is requested, and the session is keyed on the ID token's `sub` claim, so GoCron never needs the user's email address.
+
+**Logout** — Deletes the GoCron session, then sends the browser to the provider's `end_session_endpoint`. No post-logout redirect is requested, so where the provider lands the user afterwards is its choice, not GoCron's. Without an `end_session_endpoint`, only the GoCron session is cleared.
+
+Use `GC_AUTH_OIDC_CLIENT_SECRET` to keep the secret out of the config file, as described in [Secrets](#secrets). Every setting, including `enabled`, applies on config reload without a restart; changing `issuer_url` or `client_id` re-runs discovery on the next login.
 
 ## Failure semantics
 
@@ -310,7 +365,7 @@ GoCron uses standard cron semantics. If the container is down when a schedule fi
 
 ### Time zones and DST
 
-Set `time_zone` in the config (it sets the `TZ` environment variable). All schedules run in that timezone. During a DST "spring forward" gap, a cron expression targeting the skipped hour will not fire. During "fall back", a target in the repeated hour may fire once or twice. Test schedules around DST transitions.
+Set `time_zone` in the config; all schedules run in that time zone, and changing it is picked up on the next config reload. During a DST "spring forward" gap, a cron expression targeting the skipped hour will not fire. During "fall back", a target in the repeated hour may fire once or twice. Test schedules around DST transitions.
 
 ### Command timeouts
 
@@ -370,6 +425,7 @@ Alternatively, install `apprise` via the `software` list to push notifications f
 
 - Commands run inside the container as the process user (root by default in the published image). Use the least-privileged user for jobs that touch sensitive data.
 - The web UI terminal is gated by an allow-list (`terminal.allowed_commands` in the config). Do **not** set `allow_all_commands: true` in production.
+- Put GoCron behind single sign-on ([Single sign-on (OIDC)](#single-sign-on-oidc)) and a TLS-terminating proxy when it is reachable from an untrusted network; without `auth.oidc.enabled` both the UI and the API are open to anyone who can reach the port.
 - The working directory is the container's `/app`. Mount only the directories a job needs.
 
 ### Secrets
@@ -381,7 +437,7 @@ Do not store passwords, API tokens, or repository credentials in plaintext insid
 
 ### Supply-chain considerations
 
-Pre-installing backup tools (`restic`, `borgbackup`, `docker`, `podman`, etc.) increases the image's attack surface. Only list the software you actually need in the `software` section, and pin versions explicitly to avoid surprise upgrades on image rebuild.
+Pre-installing backup tools (`restic`, `borgbackup`, `docker`, `podman`, etc.) increases the image's attack surface. List only the software you need and pin versions explicitly to avoid surprise upgrades on image rebuild.
 
 ## Screenshots
 
