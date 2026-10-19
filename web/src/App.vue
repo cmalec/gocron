@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router';
+import { RouterView, useRoute } from 'vue-router';
 import AppHeader from './components/AppHeader.vue';
 import JobFormDialog from './components/JobFormDialog.vue';
 import { useJobs } from './stores/useJobs';
@@ -7,9 +7,12 @@ import { useAuth } from './stores/useAuth';
 import { useEventSource } from '@vueuse/core';
 import { computed, onMounted, ref, watch } from 'vue';
 
+const route = useRoute();
 const { parseEventInfo, fetchJobs, fetchAllHeatmaps } = useJobs();
 const { fetchCurrentUser, canUseApp } = useAuth();
 const showNewJob = ref(false);
+
+const isLoginRoute = computed(() => route.name === 'loginView');
 
 onMounted(async () => {
   await fetchCurrentUser();
@@ -39,7 +42,14 @@ async function onDialogClose(saved: boolean) {
 </script>
 
 <template>
-  <div class="min-h-screen bg-base-200/50">
+  <div v-if="isLoginRoute" class="min-h-dvh">
+    <RouterView v-slot="{ Component }">
+      <Transition mode="out-in">
+        <component :is="Component" />
+      </Transition>
+    </RouterView>
+  </div>
+  <div v-else class="min-h-screen bg-base-200/50">
     <AppHeader @new-job="showNewJob = true" />
     <main class="container py-6">
       <RouterView v-slot="{ Component }">

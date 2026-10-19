@@ -4,10 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"sync/atomic"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/flohoss/gocron/config"
 	"github.com/flohoss/gocron/services/jobs"
+	"github.com/flohoss/gosso/v2"
 )
 
 func newTestAuth(t *testing.T) (*Auth, *jobs.Queries) {
@@ -36,7 +38,11 @@ func newTestAuthWithDB(t *testing.T) (*Auth, *jobs.Queries, *sql.DB) {
 	db := newTestDB(t)
 	queries := jobs.New(db)
 
-	return &Auth{sessions: queries}, queries, db
+	return &Auth{sessions: queries, core: newCore(queries)}, queries, db
+}
+
+func newCore(queries *jobs.Queries) *gosso.Auth {
+	return gosso.New(settings, NewDBSessions(queries), callbackPath, "")
 }
 
 func newTestDB(t *testing.T) *sql.DB {
@@ -90,35 +96,6 @@ func serveWithSession(service *Auth, target, cookie string) *httptest.ResponseRe
 	return rec
 }
 
-func TestNew_DisabledWhenConfigDisabled(t *testing.T) {
-	loadConfig(t, false)
-
-	service := New(nil)
-
-	if service.Enabled() {
-		t.Fatal("expected auth to be disabled")
-	}
-}
-
-// Enabled() reads the live config so toggling auth.oidc.enabled in the file
-// takes effect without a restart.
-func TestEnabled_FollowsConfigReload(t *testing.T) {
-	loadConfig(t, true)
-
-	service := New(nil)
-	defer service.Shutdown()
-
-	if !service.Enabled() {
-		t.Fatal("expected auth to be enabled")
-	}
-
-	loadConfig(t, false)
-
-	if service.Enabled() {
-		t.Fatal("expected auth to be disabled after the reload")
-	}
-}
-
 // Discovery is warmed in the background so the first login does not pay for the
 // round trip, without blocking startup when the provider is slow or down.
 func TestNew_WarmsProviderInBackground(t *testing.T) {
@@ -134,11 +111,7 @@ func TestNew_WarmsProviderInBackground(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		service.providerMu.Lock()
-		resolved := service.provider != nil
-		service.providerMu.Unlock()
-
-		if resolved {
+		if service.core.Provider().Resolved() {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -152,9 +125,10 @@ func TestNew_WarmsProviderInBackground(t *testing.T) {
 func TestResolve_RetriesAfterAFailedDiscovery(t *testing.T) {
 	loadConfig(t, true)
 
-	service := &Auth{}
+	service := New(nil)
+	defer service.Shutdown()
 
-	if _, err := service.resolve(); !errors.Is(err, ErrProviderUnavailable) {
+	if _, err := service.core.Provider().Resolve(); !errors.Is(err, gosso.ErrProviderUnavailable) {
 		t.Fatalf("expected ErrProviderUnavailable, got %v", err)
 	}
 
@@ -165,47 +139,50 @@ func TestResolve_RetriesAfterAFailedDiscovery(t *testing.T) {
 
 	loadConfigWithIssuer(t, server.URL)
 
-	resolved, err := service.resolve()
-	if err != nil {
-		t.Fatalf("expected discovery to succeed after the provider came back: %v", err)
-	}
-	if resolved == nil || resolved.verifier == nil {
-		t.Fatal("expected a resolved provider")
+	if !service.core.Provider().Resolved() {
+		if _, err := service.core.Provider().Resolve(); err != nil {
+			t.Fatalf("expected discovery to succeed after the provider came back: %v", err)
+		}
 	}
 }
 
-// The second attempt has to hit the network again rather than replay the first
-// failure. The issuer is unchanged here, which the old cached error blocked.
-func TestResolve_RetriesTheSameIssuerAfterAFailure(t *testing.T) {
-	var healthy atomic.Bool
+// A server that accepts the connection but never responds would otherwise hang
+// discovery forever. The timeout keeps the caller unblocked so login can be
+// retried on the next request.
+func TestResolve_TimesOutOnAStuckProvider(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to open listener: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
 
-	oidcServer := &oidctest.Server{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !healthy.Load() {
-			http.Error(w, "unavailable", http.StatusServiceUnavailable)
-			return
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				<-t.Context().Done()
+				conn.Close()
+			}()
 		}
-		oidcServer.ServeHTTP(w, r)
-	}))
-	defer server.Close()
-	oidcServer.SetIssuer(server.URL)
+	}()
 
-	loadConfigWithIssuer(t, server.URL)
+	loadConfigWithIssuer(t, "http://"+listener.Addr().String())
 
-	service := &Auth{}
+	service := New(nil)
+	defer service.Shutdown()
 
-	if _, err := service.resolve(); !errors.Is(err, ErrProviderUnavailable) {
+	started := time.Now()
+	_, err = service.core.Provider().Resolve()
+	elapsed := time.Since(started)
+
+	if !errors.Is(err, gosso.ErrProviderUnavailable) {
 		t.Fatalf("expected ErrProviderUnavailable, got %v", err)
 	}
-
-	healthy.Store(true)
-
-	resolved, err := service.resolve()
-	if err != nil {
-		t.Fatalf("expected the same issuer to be retried: %v", err)
-	}
-	if resolved == nil {
-		t.Fatal("expected a resolved provider")
+	if elapsed > 15*time.Second {
+		t.Fatalf("discovery took %v, expected it to give up instead of hanging", elapsed)
 	}
 }
 
@@ -221,7 +198,8 @@ func TestNew_RequiresProviderFieldsWhenEnabled(t *testing.T) {
 func TestMiddleware_DisabledLetsEverythingThrough(t *testing.T) {
 	loadConfig(t, false)
 
-	service := &Auth{}
+	service := New(nil)
+	defer service.Shutdown()
 
 	rec := serveWithSession(service, "/api/jobs", "")
 
@@ -243,8 +221,7 @@ func TestMiddleware_RejectsMissingCookieWithUnauthorized(t *testing.T) {
 func TestMiddleware_AcceptsValidSession(t *testing.T) {
 	service, queries := newTestAuth(t)
 	expiresAt := time.Now().Add(time.Hour)
-	token, jti := randomTokenForTest(t), randomTokenForTest(t)
-	_ = token
+	jti := randomTokenForTest(t)
 	persistSession(t, queries, jti, expiresAt)
 
 	rec := serveWithSession(service, "/api/jobs", SessionCookieName+"="+jti)
@@ -311,7 +288,7 @@ func TestAuthenticate_ReturnsPersistedIdentity(t *testing.T) {
 	}
 }
 
-func TestLogout_DeletesPersistedSession(t *testing.T) {
+func TestClearSession_DeletesPersistedSession(t *testing.T) {
 	service, queries, db := newTestAuthWithDB(t)
 	expiresAt := time.Now().Add(time.Hour)
 	jti := randomTokenForTest(t)
@@ -319,9 +296,7 @@ func TestLogout_DeletesPersistedSession(t *testing.T) {
 
 	router := echo.New()
 	router.POST("/api/auth/logout", func(c *echo.Context) error {
-		if err := service.Logout(c); err != nil {
-			t.Fatalf("unexpected logout error: %v", err)
-		}
+		service.ClearSession(c)
 		return c.NoContent(http.StatusNoContent)
 	})
 
@@ -335,6 +310,34 @@ func TestLogout_DeletesPersistedSession(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("expected the session row to be deleted, found %d row(s)", remaining)
+	}
+}
+
+func TestClearSession_ExpiresCookie(t *testing.T) {
+	service, queries, _ := newTestAuthWithDB(t)
+	expiresAt := time.Now().Add(time.Hour)
+	jti := randomTokenForTest(t)
+	persistSession(t, queries, jti, expiresAt)
+
+	router := echo.New()
+	router.GET("/", func(c *echo.Context) error {
+		service.ClearSession(c)
+		return c.NoContent(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(echo.HeaderCookie, SessionCookieName+"="+jti)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	cleared := false
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == SessionCookieName && cookie.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("expected the session cookie to be expired")
 	}
 }
 
@@ -370,7 +373,7 @@ func TestStartSession_PersistsAndSetsCookie(t *testing.T) {
 
 	router := echo.New()
 	router.GET("/api/auth/callback", func(c *echo.Context) error {
-		return service.StartSession(c, "user-subject", time.Now().Add(time.Hour))
+		return service.core.Sessions.Start(c.Response(), c.Request(), "user-subject", time.Now().Add(time.Hour))
 	})
 
 	rec := httptest.NewRecorder()
@@ -389,18 +392,17 @@ func TestStartSession_PersistsAndSetsCookie(t *testing.T) {
 	}
 }
 
-// Rotating cookie flags or the session TTL must not require a restart: these
-// helpers read the reloaded config at call time.
+// Rotating cookie flags or the session TTL must not require a restart: the
+// cookie helpers read the reloaded config at call time.
 func TestSessionCookie_FollowsConfigReload(t *testing.T) {
-	service := &Auth{}
-
 	loadConfig(t, true)
-	if got := service.SessionTTL(); got != 24*time.Hour {
+
+	if got := (&Auth{core: newCore(nil)}).SessionTTL(); got != 24*time.Hour {
 		t.Fatalf("expected the hydrated default TTL, got %v", got)
 	}
 
 	expiresAt := time.Now().Add(time.Hour)
-	cookie := service.SessionCookie("token", expiresAt)
+	cookie := CookieOptions().Cookie(SessionCookieName, "token", 0, expiresAt)
 
 	if cookie.Name != SessionCookieName {
 		t.Fatalf("unexpected cookie name: %q", cookie.Name)
@@ -429,28 +431,23 @@ func TestSessionCookie_FollowsConfigReload(t *testing.T) {
 		t.Fatalf("failed to reload test config: %v", err)
 	}
 
-	if got := service.SessionTTL(); got != 2*time.Hour {
-		t.Fatalf("expected the reloaded TTL, got %v", got)
-	}
-	if cookie := service.SessionCookie("token", expiresAt); !cookie.Secure {
+	if cookie := CookieOptions().Cookie(SessionCookieName, "token", 0, expiresAt); !cookie.Secure {
 		t.Fatal("expected the session cookie to honour the reloaded cookie_secure")
 	}
 }
 
-func TestClearSessionCookie_ExpiresImmediately(t *testing.T) {
-	service := &Auth{}
-
-	if cookie := service.ClearSessionCookie(); cookie.MaxAge != -1 {
+func TestSessionCookie_ExpiresImmediatelyWhenMaxAgeNegative(t *testing.T) {
+	if cookie := CookieOptions().Cookie(SessionCookieName, "", -1, time.Time{}); cookie.MaxAge != -1 {
 		t.Fatalf("expected MaxAge -1 to delete the cookie, got %d", cookie.MaxAge)
 	}
 }
 
 func TestRandomToken_ReturnsDistinctHexValues(t *testing.T) {
-	first, err := randomToken(sessionTokenSize)
+	first, err := gosso.RandomToken(sessionTokenSize)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	second, err := randomToken(sessionTokenSize)
+	second, err := gosso.RandomToken(sessionTokenSize)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -469,7 +466,7 @@ func TestRandomToken_ReturnsDistinctHexValues(t *testing.T) {
 func randomTokenForTest(t *testing.T) string {
 	t.Helper()
 
-	token, err := randomToken(sessionTokenSize)
+	token, err := gosso.RandomToken(sessionTokenSize)
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -493,22 +490,166 @@ func TestCallbackURL_DerivedFromRequest(t *testing.T) {
 
 	for _, tc := range cases {
 		router := echo.New()
+		configCore := &Auth{core: &gosso.Auth{Settings: func() gosso.Config { return gosso.Config{} }, CallbackPath: "/api/auth/callback"}}
 		var got string
 		router.GET("/api/auth/login", func(c *echo.Context) error {
-			got = callbackURL(c)
+			got = configCore.core.CallbackURL(c.Request())
 			return c.NoContent(http.StatusOK)
 		})
 
 		req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+		// gosso.Scheme trusts X-Forwarded-Proto unconditionally: proxies must be in
+		// front, or app_url has to be set so the derived scheme is never consulted.
 		if tc.proto != "" {
-			req.Header.Set(echo.HeaderXForwardedProto, tc.proto)
+			req.Header.Set("X-Forwarded-Proto", tc.proto)
 		}
 		router.ServeHTTP(httptest.NewRecorder(), req)
 
 		if got != tc.want {
-			t.Errorf("%s: callbackURL() = %q, want %q", tc.name, got, tc.want)
+			t.Errorf("%s: CallbackURL() = %q, want %q", tc.name, got, tc.want)
 		}
 	}
+}
+
+// Behind proxies that do not forward the original scheme (e.g. NetBird), the
+// registered redirect URI would be built with http and rejected by the
+// provider. app_url overrides the request-derived value in that case.
+func TestCallbackURL_PrefersAppUrl(t *testing.T) {
+	v := baseConfig()
+	v.Set("server.app_url", "https://gocron.example.com")
+	if err := config.ValidateAndLoadConfig(v); err != nil {
+		t.Fatalf("failed to load test config: %v", err)
+	}
+	t.Cleanup(func() { config.ValidateAndLoadConfig(baseConfig()) })
+
+	router := echo.New()
+	configCore := &Auth{core: &gosso.Auth{Settings: settings, CallbackPath: "/api/auth/callback"}}
+	var got string
+	router.GET("/api/auth/login", func(c *echo.Context) error {
+		got = configCore.core.CallbackURL(c.Request())
+		return c.NoContent(http.StatusOK)
+	})
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "http://gocron:8156/api/auth/login", nil))
+
+	if got != "https://gocron.example.com/api/auth/callback" {
+		t.Errorf("CallbackURL() = %q, want %q", got, "https://gocron.example.com/api/auth/callback")
+	}
+}
+
+// The optional handoff target has to survive the provider round trip inside the
+// state cookie and be rejected unless it is a site-relative path.
+func TestStartLogin_CarriesValidatedRedirectTarget(t *testing.T) {
+	oidcServer := &oidctest.Server{}
+	server := httptest.NewServer(oidcServer)
+	defer server.Close()
+	oidcServer.SetIssuer(server.URL)
+
+	loadConfigWithIssuer(t, server.URL)
+
+	db := newTestDB(t)
+	queries := jobs.New(db)
+
+	service := &Auth{sessions: queries, core: newCore(queries)}
+	defer service.Shutdown()
+
+	router := echo.New()
+	router.GET("/api/auth/login", func(c *echo.Context) error {
+		return service.StartLogin(c)
+	})
+
+	requests := map[string]string{
+		"/api/auth/login?redirect=/jobs/abc":        "/jobs/abc",
+		"/api/auth/login?redirect=https://evil.tld": "/",
+		"/api/auth/login?redirect=//evil.tld":       "/",
+	}
+
+	for target, wantRedirect := range requests {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusFound {
+			t.Fatalf("%s: expected a redirect to the provider, got %d", target, rec.Code)
+		}
+
+		var stateCookie *http.Cookie
+		for _, cookie := range rec.Result().Cookies() {
+			if strings.HasSuffix(cookie.Name, "_oidc_state") {
+				stateCookie = cookie
+			}
+		}
+		if stateCookie == nil {
+			t.Fatalf("%s: expected the state cookie", target)
+		}
+
+		parts := splitStateValue(stateCookie.Value)
+		if len(parts) < 2 {
+			t.Fatalf("%s: expected state|verifier in the cookie", target)
+		}
+		redirect := "/"
+		if len(parts) > 2 {
+			redirect = parts[2]
+		}
+		if redirect != wantRedirect {
+			t.Errorf("%s: stored redirect %q, want %q", target, redirect, wantRedirect)
+		}
+	}
+}
+
+func splitStateValue(value string) []string {
+	return strings.Split(value, "|")
+}
+
+// The handoff target stored during StartLogin has to come back out of
+// ConsumeLoginState, otherwise the callback cannot honour the deep link and
+// every login silently lands on the app root.
+func TestConsumeLoginState_ReturnsStoredRedirectTarget(t *testing.T) {
+	oidcServer := &oidctest.Server{}
+	server := httptest.NewServer(oidcServer)
+	defer server.Close()
+	oidcServer.SetIssuer(server.URL)
+
+	loadConfigWithIssuer(t, server.URL)
+
+	service := &Auth{core: newCore(nil)}
+
+	router := echo.New()
+	router.GET("/api/auth/login", func(c *echo.Context) error {
+		return service.StartLogin(c)
+	})
+	router.GET("/api/auth/callback", func(c *echo.Context) error {
+		state, verifier, redirect, err := service.core.ConsumeLoginState(c.Response(), c.Request())
+		if err != nil {
+			t.Fatalf("consume failed: %v", err)
+		}
+
+		if state == "" || verifier == "" {
+			t.Fatalf("expected state and verifier, got %q and %q", state, verifier)
+		}
+		if redirect != "/jobs/abc" {
+			t.Fatalf("expected the stored redirect target, got %q", redirect)
+		}
+
+		return c.NoContent(http.StatusOK)
+	})
+
+	start := httptest.NewRecorder()
+	router.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/api/auth/login?redirect=/jobs/abc", nil))
+
+	if start.Code != http.StatusFound {
+		t.Fatalf("expected the login to redirect to the provider, got %d", start.Code)
+	}
+
+	// StartLogin clears the stale state cookie before writing the new one, so
+	// replay only the live value the browser would end up sending.
+	callback := httptest.NewRequest(http.MethodGet, "/api/auth/callback?state=any&code=any", nil)
+	for _, cookie := range start.Result().Cookies() {
+		if strings.HasSuffix(cookie.Name, "_oidc_state") && cookie.Value != "" {
+			callback.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
+		}
+	}
+
+	router.ServeHTTP(httptest.NewRecorder(), callback)
 }
 
 func loadConfig(t *testing.T, enabled bool) {

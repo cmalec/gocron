@@ -60,6 +60,7 @@ type ServerSettings struct {
 	Address        string            `mapstructure:"address" validate:"required,ipv4"`
 	Port           int               `mapstructure:"port" validate:"required,gte=1024,lte=65535"`
 	TrustedProxies []string          `mapstructure:"trusted_proxies" validate:"omitempty,dive,cidr"`
+	AppUrl         string            `mapstructure:"app_url" validate:"omitempty,url,endsnotwith=/"`
 	CORS           CORSSettings      `mapstructure:"cors"`
 	RateLimit      RateLimitSettings `mapstructure:"rate_limit"`
 }
@@ -277,6 +278,10 @@ func ValidateAndLoadConfig(v *viper.Viper) error {
 		os.Setenv("TZ", tempCfg.TimeZone.String())
 	}
 
+	if tempCfg.Auth.OIDC.Enabled && tempCfg.Server.AppUrl == "" {
+		slog.Warn("OIDC is enabled without server.app_url; the callback URL is derived from the request")
+	}
+
 	return nil
 }
 
@@ -475,6 +480,12 @@ func GetTrustedProxies() []string {
 	mu.RLock()
 	defer mu.RUnlock()
 	return cfg.Server.TrustedProxies
+}
+
+func GetAppUrl() string {
+	mu.RLock()
+	defer mu.RUnlock()
+	return cfg.Server.AppUrl
 }
 
 func GetJobsCron(job *Job) string {

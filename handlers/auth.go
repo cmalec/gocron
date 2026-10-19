@@ -2,15 +2,14 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/labstack/echo/v5"
 
 	"github.com/flohoss/gocron/internal/auth"
+	"github.com/flohoss/gosso/v2"
 )
 
 const sessionScheme = "cookieAuth"
@@ -18,14 +17,9 @@ const sessionScheme = "cookieAuth"
 type AuthService interface {
 	Enabled() bool
 	StartLogin(c *echo.Context) error
-	ConsumeLoginState(c *echo.Context) (string, string, error)
+	HandleCallback(c *echo.Context) (*gosso.LoginResult, *gosso.LoginFailure)
 	Authenticate(c *echo.Context) (*auth.User, error)
-	Exchange(c *echo.Context, code, verifier string) (string, error)
-	StartSession(c *echo.Context, subject string, expiresAt time.Time) error
-	SessionTTL() time.Duration
-	ClearSessionCookie() *http.Cookie
-	Logout(c *echo.Context) error
-	LogoutURL() string
+	ClearSession(c *echo.Context)
 	Middleware() echo.MiddlewareFunc
 }
 
@@ -81,13 +75,8 @@ func (ah *AuthHandler) loginHandler(c *echo.Context) error {
 	}
 
 	if err := ah.Auth.StartLogin(c); err != nil {
-		if errors.Is(err, auth.ErrProviderUnavailable) {
-			slog.Error("OIDC provider unavailable", "error", err)
-			return echo.NewHTTPError(http.StatusServiceUnavailable, "Identity provider is not reachable")
-		}
-
 		slog.Error("Failed to start login", "error", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to start login")
+		return redirect(c, LoginErrorPath(string(gosso.ClassifyLoginError(err))))
 	}
 
 	return nil
@@ -98,59 +87,32 @@ func (ah *AuthHandler) callbackHandler(c *echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "Not found")
 	}
 
-	if providerError := c.QueryParam("error"); providerError != "" {
-		slog.Warn("OIDC provider rejected login", "error", providerError)
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "sso_failed", "message": "Authentication required", "provider_error": providerError})
+	result, failure := ah.Auth.HandleCallback(c)
+	if failure != nil {
+		gosso.LogFailure(failure)
+
+		return redirect(c, LoginErrorPath(string(failure.Code)))
 	}
 
-	state, verifier, err := ah.Auth.ConsumeLoginState(c)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "state", "message": "Authentication required", "detail": "login session expired or missing"})
-	}
+	slog.Info("User logged in", "subject", result.Subject)
 
-	if c.QueryParam("state") != state {
-		slog.Warn("OIDC state mismatch, discarding callback")
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "state", "message": "Authentication required", "detail": "state mismatch"})
-	}
-
-	subject, err := ah.Auth.Exchange(c, c.QueryParam("code"), verifier)
-	if err != nil {
-		if errors.Is(err, auth.ErrProviderUnavailable) {
-			slog.Error("OIDC provider unavailable", "error", err)
-			return echo.NewHTTPError(http.StatusServiceUnavailable, "Identity provider is not reachable")
-		}
-
-		slog.Error("OIDC login failed", "error", err)
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "sso_failed", "message": "Authentication required", "detail": "Authentication failed"})
-	}
-
-	if err := ah.Auth.StartSession(c, subject, time.Now().Add(ah.Auth.SessionTTL())); err != nil {
-		slog.Error("Failed to create session", "error", err)
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create session")
-	}
-
-	slog.Info("User logged in", "subject", subject)
-	return redirect(c, "/")
-}
-
-type logoutBody struct {
-	LogoutURL string `json:"logout_url,omitempty" doc:"The provider's end-session endpoint, where the browser is sent to clear the provider-side session. Empty when the provider does not advertise one, in which case only the GoCron session is cleared."`
+	return redirect(c, result.Redirect)
 }
 
 type logoutResponse struct {
 	Body logoutBody
 }
 
+type logoutBody struct {
+	Redirect string `json:"redirect" doc:"Where the SPA should navigate after the session was cleared. Always '/'; provider-side logout is out of scope."`
+}
+
 func (ah *AuthHandler) logoutHandler(ctx context.Context, input *struct{}) (*logoutResponse, error) {
 	c := echoContextFrom(ctx)
 
-	if err := ah.Auth.Logout(c); err != nil {
-		slog.Warn("Failed to revoke session", "error", err)
-	}
+	ah.Auth.ClearSession(c)
 
-	c.SetCookie(ah.Auth.ClearSessionCookie())
-
-	return &logoutResponse{Body: logoutBody{LogoutURL: ah.Auth.LogoutURL()}}, nil
+	return &logoutResponse{Body: logoutBody{Redirect: "/"}}, nil
 }
 
 func (ah *AuthHandler) meHandler(ctx context.Context, input *struct{}) (*currentUserResponse, error) {
