@@ -90,14 +90,16 @@ type RunView struct {
 }
 
 func NewJobService() (*JobService, error) {
-	queries, err := setupSQLite()
+	db, err := setupSQLite()
 	if err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
 
+	queries := jobs.New(db)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	js := &JobService{Queries: queries, jobCtx: ctx, jobCancel: cancel}
+	js := &JobService{DB: db, Queries: queries, jobCtx: ctx, jobCancel: cancel}
 	queries.StopRunning(context.Background())
 	js.loadJobStates()
 	js.setupJobs()
@@ -192,7 +194,6 @@ func (js *JobService) setupViperWatcher() {
 			slog.Info("Configuration reloaded",
 				"jobs", len(config.GetJobs()),
 				"schedules", len(config.GetAllCrons()),
-				"auth_enabled", config.GetAuth().OIDC.Enabled,
 			)
 		})
 	})
@@ -201,6 +202,7 @@ func (js *JobService) setupViperWatcher() {
 }
 
 type JobService struct {
+	DB         *sql.DB
 	Queries    *jobs.Queries
 	Scheduler  *scheduler.Scheduler
 	Events     *events.Event
@@ -216,6 +218,10 @@ func (js *JobService) SetEvents(e *events.Event) {
 
 func (js *JobService) GetQueries() *jobs.Queries {
 	return js.Queries
+}
+
+func (js *JobService) GetDB() *sql.DB {
+	return js.DB
 }
 
 func (js *JobService) GetHandler() echo.HandlerFunc {

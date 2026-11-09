@@ -8,6 +8,7 @@ import (
 	"github.com/flohoss/gocron/config"
 	"github.com/flohoss/gocron/services"
 	"github.com/flohoss/gocron/services/jobs"
+	"github.com/flohoss/gosso/v3"
 	"github.com/labstack/echo/v5"
 )
 
@@ -42,7 +43,7 @@ func (jh *JobHandler) listJobsOperation() huma.Operation {
 		Summary:     "Get jobs",
 		Description: "Get jobs with run details but no logs.",
 		Tags:        []string{"Jobs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -63,7 +64,7 @@ func (jh *JobHandler) listRunsOperation() huma.Operation {
 		Summary:     "Get runs",
 		Description: "Get runs with logs for a job.",
 		Tags:        []string{"Runs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -91,7 +92,7 @@ func (jh *JobHandler) heatmapOperation() huma.Operation {
 		Summary:     "Get heatmap",
 		Description: "Get daily run statistics for a job, suitable for a GitHub-style activity heatmap.",
 		Tags:        []string{"Runs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -118,7 +119,7 @@ func (jh *JobHandler) pauseJobOperation() huma.Operation {
 		Summary:     "Pause job",
 		Description: "Pause a job. Scheduled executions are skipped until resumed. State persists across restarts.",
 		Tags:        []string{"Jobs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -139,7 +140,7 @@ func (jh *JobHandler) resumeJobOperation() huma.Operation {
 		Summary:     "Resume job",
 		Description: "Resume a paused job.",
 		Tags:        []string{"Jobs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -160,7 +161,7 @@ func (jh *JobHandler) activityOperation() huma.Operation {
 		Summary:     "Get activity",
 		Description: "Get the most recent runs across all jobs.",
 		Tags:        []string{"Runs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -182,7 +183,7 @@ func (jh *JobHandler) executeJobsOperation() huma.Operation {
 		Summary:     "Start jobs",
 		Description: "Start all jobs in order of name.",
 		Tags:        []string{"Jobs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -199,7 +200,7 @@ func (jh *JobHandler) executeJobOperation() huma.Operation {
 		Summary:     "Start job",
 		Description: "Start single job.",
 		Tags:        []string{"Jobs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
@@ -222,7 +223,7 @@ func (jh *JobHandler) changeJobOperation() huma.Operation {
 		Summary:     "Change job",
 		Description: "Change single job.",
 		Tags:        []string{"Jobs"},
-		Security:    []map[string][]string{{sessionScheme: {}}},
+		Security:    []map[string][]string{{gosso.SecurityScheme: {}}},
 	}
 }
 
